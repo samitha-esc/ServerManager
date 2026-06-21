@@ -1,0 +1,104 @@
+# Thermal foundation configuration.
+# Timestep is 1 second. All physically tunable constants live here so that
+# nothing zone-specific is hardcoded in the Python modules. A liquid-cooled
+# zone can later be added purely by appending an entry under `zones`.
+
+sim:
+  dt: 1.0                 # [s] discrete timestep
+
+power:
+  # OpenDC / SPECpower-style curve:
+  #   P(u) = p_idle + (p_max - p_idle) * (2*u - u**r)
+  # Idle is already baked into this single value (it IS the node heat input).
+  p_idle: 120.0          # [W] power drawn at u = 0
+  p_max: 400.0           # [W] power drawn at u = 1
+  r: 1.4                 # convexity exponent of the SPECpower curve
+
+thermal:
+  # Lumped RC node parameters shared by every slot.
+  # NOTE: re-calibrated in Phase 2b. K_cool was lowered 9->7 (see zones.air) and
+  # C lowered 540->420 to hold tau = C/K_cool = 60 s, giving the model thermal
+  # headroom: baseline trace load (~0.4) now sits ~60 °C and sustained high load
+  # can reach the 75-80 °C regime where cooling control must act.
+  K_heat: 1.0            # [°C/(W·s)·(C)] electrical power -> heat coupling
+  C: 420.0               # [J/°C] effective thermal capacitance of a node
+  # NOTE: alpha (recirculation strength) moved to each zone in Phase 3 — it is a
+  # cooling-fabric property, not a node property (liquid has no exhaust column).
+
+rack:
+  n_slots: 15            # number of vertical slots (bottom = 0, top = N-1)
+  initial_temp: 22.0     # [°C] all nodes start at supply temperature
+
+# A rack belongs to exactly one cooling zone. Each zone owns its cooling
+# parameters, recirculation strength (alpha), and actuation multiplier. Adding a
+# zone is purely config — there is no zone-specific branching in the Python.
+zones:
+  air:
+    name: air-zone-1
+    kind: air
+    K_cool: 7.0          # [W/°C] convective heat removal (Phase 2b: was 9.0)
+    T_supply: 22.0       # [°C] cold-aisle supply (coolant/air) temperature
+    alpha: 0.006         # recirculation strength: hot exhaust column rises rack
+    omega_fan: 1.0       # fan speed multiplier (actuation hook, fixed 1.0)
+
+  # Liquid (direct-to-chip / cold-plate): removes heat at the component, so far
+  # more heat moves (high K_cool), the loop runs cooler than cold-aisle air (low
+  # T_supply), and there is no rising exhaust-air column (near-zero alpha).
+  # omega_fan is the pump multiplier — identical interface to the air fan.
+  liquid:
+    name: liquid-zone-1
+    kind: liquid
+    # K_cool sized for FINITE headroom, not maximal cooling: at ~1.4× air the
+    # liquid zone peaks ~58 °C under the same bursty load that drives air to
+    # 82 °C — safely below 75 but with real spare capacity, so routing into
+    # liquid is advantageous yet not trivially unlimited. (At 6× air it sat at
+    # ~28 °C, which removed the finite-capacity constraint entirely.)
+    K_cool: 10.0         # [W/°C] ~1.4× air; liquid moves more heat, not infinite
+    T_supply: 18.0       # [°C] chilled liquid loop, cooler than cold-aisle air
+    alpha: 0.0002        # near-zero: cold-plate cooling has no exhaust column
+    omega_fan: 1.0       # pump speed multiplier (same actuation hook as fans)
+
+# Trace-driven load layer (Phase 2). The Alibaba 2018 machine_usage trace,
+# cluster-averaged at a 300 s stride, is interpolated to the 1 s sim timestep
+# and turned into a per-slot utilization that drives the existing thermal model.
+trace:
+  path: data/alibaba_machine_usage_300s.parquet
+  source_stride_s: 300         # [s] spacing between raw trace samples
+  cpu_column: cpu_util_percent # primary load driver, on a [0, 100] scale
+  interpolation: linear        # name dispatched to an interpolator function
+
+  # The raw signal is cluster-averaged, so every slot would otherwise be
+  # identical. We apply a fixed, deterministically-seeded per-slot transform
+  #   u_slot[n, t] = clip( u_trace[t] * multiplier[n] + offset[n], 0, 1 )
+  # where multiplier[n] ~ 1 ± scale_spread and offset[n] ~ ± offset_spread are
+  # drawn once from a seeded RNG (same values on every run — no seed drift).
+  variation:
+    seed: 1729             # RNG seed; fixed values -> reproducible runs
+    scale_spread: 0.08     # per-slot multiplier drawn from 1 ± scale_spread
+    offset_spread: 0.01    # per-slot additive offset drawn from ± offset_spread
+
+# Per-node burstiness layer (Phase 2b). Adds deterministic, independent bursts
+# on top of the baseline utilization so individual slots intermittently spike to
+# near-full load while the cluster average stays moderate. Each slot draws from
+# its own stream (seed + slot_index), so nodes diverge and runs are reproducible.
+burstiness:
+  enabled: true            # set false to recover the smooth Phase 2 baseline
+  seed: 2024               # base RNG seed; per-slot stream uses seed + slot_index
+  arrival_per_hour: 2.0    # expected burst starts per slot per hour
+  magnitude: [0.5, 0.7]    # additive elevation added to baseline u (then clipped)
+  # Burst duration range [s]. MUST be several × τ (τ ≈ 60 s): a burst shorter
+  # than ~τ barely heats the node because it sheds heat as fast as it arrives.
+  # 180–480 s (3–8 min) lets heat genuinely accumulate into the 75–85 °C range.
+  duration_s: [180, 480]
+
+# Cooling Agent (Phase 4). Predictive, zoned fan controller with hysteresis on
+# one air rack. Decisions are made on a temperature forecast `horizon_s` ahead.
+# omega_fan is real actuation (feeds the thermal model); the throttle request it
+# asserts in the critical zone is logged ONLY this phase — it does not touch load.
+cooling_agent:
+  horizon_s: 15.0          # [s] prediction look-ahead (predictive, not reactive)
+  warn_c: 75.0             # [°C] safe -> warning: fans begin ramping
+  critical_c: 80.0         # [°C] warning -> critical: assert throttle, fans maxed
+  fan_max: 2.5             # omega_fan at the top of the warning band / in critical
+  release_c: 72.0          # [°C] hysteresis: critical latch clears below this
+  fan_base: 1.0            # omega_fan in the safe zone
