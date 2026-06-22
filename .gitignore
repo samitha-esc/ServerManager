@@ -16,3 +16,6 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+
+implementation_plan.md
