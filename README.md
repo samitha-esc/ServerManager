@@ -25,13 +25,42 @@ strength) was promoted from the global `thermal:` block to each zone, because it
 is a cooling-fabric property, not a node property — liquid cools at the component
 and has no rising exhaust column. The air zone is byte-for-byte unchanged.
 
-**Phase 4 — Cooling Agent (this part).** The first control agent. A predictive,
+**Phase 4 — Cooling Agent (complete).** The first control agent. A predictive,
 zoned fan controller with a latched critical state regulates one air rack: it
 reads temperature, forecasts ~15 s ahead, ramps `omega_fan` through the warning
 band, and asserts a (logged-only) `THROTTLE_REQUEST` in the critical zone. The
 substrate is untouched — the agent only writes the existing `omega_fan` hook.
-There is still no Workload Agent, routing, task queue, or message bus, and the
-throttle signal is **not** wired into load — those come in later phases.
+
+**Phase 5 — Workload Agent (complete).** The second control agent. It sits
+between the load signal and the rack and consumes the Cooling Agent's
+`THROTTLE_REQUEST` (the action deferred in Phase 4): during a thermal emergency
+it enforces a 4-tier priority matrix — preserving critical work (P0/P1) while
+deferring/shedding delay-tolerant work (P2/P3) into a buffer. In nominal
+operation it is a transparent pass-through by default; thermal-aware
+**Least-Thermal-Intensity (LTI) routing** is an opt-in.
+
+**Phase 6 — cross-zone routing (complete).** A 2-rack air+liquid cluster with a
+**liquid-first** workload router: it places cluster demand on the cool, finite
+liquid zone first and spills the overflow to air, conserving total load. This is
+the payoff of the Phase 3 finite-headroom liquid zone — it keeps air as a cool
+reserve and the cluster ~13 °C cooler than a naive even split.
+
+**Phase 7 — server-room composition + energy (complete).** The whole stack runs
+together over a ~50-rack room (35 air + 15 liquid): the cross-zone router feeds
+per-rack Cooling Agents (fans/pump) and Workload Agents, with a
+**cooling-energy / PUE** model on top (fan power ∝ ω³, liquid pumps). It shows
+the cost payoff — liquid-first routing keeps air racks out of the expensive
+cube-law fan-ramp regime, cutting cooling energy as the room gets busier. The
+per-rack loop is "start medium, design for large": batching state into
+`[R, n_slots]` arrays later scales it to hundreds of racks.
+
+**Phase 8 — visualization data layer (this part).** A backend **data contract**
+so a (separately built) visualization can consume the simulation: a
+`SimulationEngine` that emits plain JSON-serializable per-tick frames (per-rack
+temps, fan speed, throttle state, power; plus room PUE/TPI/energy), an
+`export_run.py` that records a run to a single JSON file, and `SCHEMA.md`
+documenting the contract. No frontend is built here — the engine is importable
+for live use and the recorded file is loadable by any stack.
 
 ## Layout
 
@@ -44,16 +73,31 @@ datacenter-sim/
   src/trace_loader.py            # Alibaba trace -> per-slot 1 s utilization
   src/burstiness.py              # independent per-node load bursts (Phase 2b)
   src/cooling_agent.py           # predictive zoned fan controller (Phase 4)
+  src/workload_agent.py          # priority-aware routing & shedding (Phase 5)
+  src/cross_zone_router.py       # liquid-first air/liquid placement (Phase 6)
+  src/energy.py                  # cooling-energy / PUE accounting (Phase 7)
+  src/room.py                    # server-room composition of full stack (Phase 7)
+  src/sim_engine.py              # JSON frame engine for visualization (Phase 8)
+  SCHEMA.md                      # visualization data contract (Phase 8)
   scripts/validate_thermal.py    # Phase 1: synthetic-load scenarios
   scripts/validate_trace.py      # Phase 2: trace-driven thermal response
   scripts/validate_burstiness.py # Phase 2b: bursty thermal stress
   scripts/validate_zones.py      # Phase 3: air vs. liquid under same load
   scripts/validate_cooling.py    # Phase 4: cooling agent (nominal + degraded)
+  scripts/validate_workload.py   # Phase 5: workload agent (LTI + shedding)
+  scripts/validate_routing.py    # Phase 6: cross-zone routing (vs naive split)
+  scripts/validate_room.py       # Phase 7: full stack over a server room
+  scripts/export_run.py          # Phase 8: record a run to JSON for the viz
   tests/test_thermal.py          # power curve, gradient, convergence
   tests/test_trace_loader.py     # clipping, interpolation length, determinism
   tests/test_burstiness.py       # clipping, determinism, independence, 75 °C
   tests/test_zones.py            # air regression, liquid safety, flat gradient
   tests/test_cooling_agent.py    # zones, ramp, hysteresis latch, load boundary
+  tests/test_workload_agent.py   # LTI conservation, priority shedding, TPI
+  tests/test_cross_zone_router.py # conservation, liquid-first, spill, overload
+  tests/test_energy.py           # cube-law cooling power, PUE
+  tests/test_room.py             # composition, conservation, routed<naive energy
+  tests/test_sim_engine.py       # JSON frames, schema fields, determinism
   data/                          # (gitignored) holds the trace parquet
   outputs/                       # (gitignored) plots land here
 ```
@@ -68,7 +112,28 @@ python scripts/validate_trace.py       # Phase 2 plots -> outputs/
 python scripts/validate_burstiness.py  # Phase 2b plots -> outputs/
 python scripts/validate_zones.py       # Phase 3 plots -> outputs/
 python scripts/validate_cooling.py     # Phase 4 plots -> outputs/
+python scripts/validate_workload.py    # Phase 5 plots -> outputs/
+python scripts/validate_routing.py     # Phase 6 plots -> outputs/
+python scripts/validate_room.py        # Phase 7 plots -> outputs/
 ```
+
+## Visualization data (for the frontend team)
+
+The backend emits the simulation as plain JSON — see **[SCHEMA.md](SCHEMA.md)**
+for the full contract. Record a run, or drive the engine live:
+
+```bash
+python scripts/export_run.py --minutes 30 --stride 5   # -> outputs/run_routed.json
+python scripts/export_run.py --naive                   # baseline to compare against
+python scripts/export_run.py --slots                   # add per-slot temps (heatmaps)
+```
+
+```python
+from src.sim_engine import SimulationEngine, generate_room_demand   # live use
+```
+
+Each run file is `{ metadata, topology, frames }`; every frame carries per-rack
+temperature, fan speed, throttle state, and power, plus room PUE/TPI/energy.
 
 ## The model
 
@@ -421,3 +486,219 @@ Plots written to `outputs/`:
 - `cooling_degraded_throttle.png` — temperature (actual + predicted) and
   `omega_fan` with the 75/80/72 °C lines, and the `THROTTLE_REQUEST` timeline
   beneath, showing the single latched assert → hold → release@72 cycle.
+
+## Phase 5 — Workload Agent
+
+`src/workload_agent.py` is the second control agent. It sits between the load
+signal and the rack and consumes the Cooling Agent's `THROTTLE_REQUEST` — the
+load-side action that was deliberately deferred in Phase 4. Each tick it:
+
+1. **Triages** each slot's utilization into four priority tiers by configurable
+   fractions (must sum to 1.0; validated at construction): P0-Critical (live
+   requests), P1-High (training), P2-Medium (ETL), P3-Low (backups/logs).
+2. **Reads the throttle** through a configurable inter-agent staleness delay
+   (`propagation_delay_ticks`, default 1 tick = 1 s). This is a stand-in for the
+   future inter-agent message bus — *not* a literal network model (real latency
+   is ~µs, far below the 1 s timestep).
+3. **Acts**:
+   - *Nominal* (no throttle): transparent **pass-through by default**, so the
+     baseline simulation is byte-identical to Phases 1–4. Thermal-aware
+     **LTI routing** (steer load to cooler slots) is opt-in via `lti_enabled`
+     and, when on, conserves total load exactly (relocates, never drops).
+   - *Throttled* (emergency): enforce the priority matrix — P0 full; P1 full
+     (−15 % on nodes ≥ 83 °C); P2 deferred to a heap buffer (expires after 45 s);
+     P3 held until the alarm clears, then drained back in.
+
+**Task Preservation Index (TPI)** = `executed / (executed + expired)`. Only
+permanently-lost work (P2 timeouts) counts against it; work still in the buffer
+is in-flight (neither credited nor penalised) and enters the ratio only when it
+drains (→ executed) or expires (→ lost). P1 throttling is a rate reduction, not a
+dropped task; P3 is preserved once it drains.
+
+### Design notes (consciously reviewed)
+
+- **LTI is gated off by default** and load-conserving. An earlier version ran it
+  always-on and lost ~11 % of load to non-conservation (inflating its apparent
+  benefit); both issues are fixed.
+- **The delay is decision-staleness, not a network model.** At `dt = 1 s`, real
+  µs-scale latency is sub-tick; the 1-tick default models loose agent coupling
+  and is a placeholder for the message bus. Set `propagation_delay_ticks: 0` for
+  tight same-tick coupling.
+- **Priority matrix simplifications:** fractions are fixed per tier (assumes a
+  uniform workload mix across nodes), and P3 can be held indefinitely under a
+  sustained emergency (intended — it is the most deferrable tier).
+
+### Validation results (`scripts/validate_workload.py`)
+
+**Nominal** (4 h bursty load):
+
+| Run | Peak | TPI | Gradient spread |
+|---|---|---|---|
+| Cooling-only baseline | 74.95 °C | — | — |
+| + Workload (default, LTI off) | **74.95 °C** | **1.000** | 3.87 °C |
+| + Workload (LTI on) | 66.96 °C | **1.000** | **0.03 °C** |
+
+The default agent overlays the baseline exactly (regression-tested); LTI-on
+flattens the rack to a near-uniform profile **without dropping work** (TPI 1.0).
+
+**Degraded** (CRAC-fault stress, throttle active): peak drops from 96.1 °C
+(cooling-only) to **77.3 °C** with the workload agent (−18.8 °C) by shedding
+P2/P3; **TPI ≈ 0.91** (≈ 4.4 k units of P2 work expired, explicitly in the
+denominator). The throttle never alters the load array (boundary held).
+
+Plots written to `outputs/`:
+- `workload_nominal_lti.png` — default-vs-baseline overlay and the LTI gradient
+  flattening (per-slot time-averaged profile).
+- `workload_degraded_shedding.png` — temperature (with vs. without the agent),
+  per-priority load shed, buffer depth, and the throttle timeline.
+
+### Boundary for later phases
+
+No multi-rack cluster, no cross-zone (air↔liquid) routing, and no real
+inter-agent message bus yet — the agent regulates one air rack and reads the
+cooling decision directly through the staleness delay. Those are later phases.
+
+## Phase 6 — cross-zone routing
+
+`src/cross_zone_router.py` places workload across a **2-rack cluster** (one air
+rack + one liquid rack) with a **liquid-first** policy, exploiting the finite
+liquid headroom built in Phase 3. Each tick:
+
+```
+liquid_total = min(demand, liquid_capacity)   # fill the cool zone first
+air_total    = demand - liquid_total          # spill the overflow to air
+```
+
+Liquid is preferred because it runs far cooler (~58 °C at full load vs. air's
+~82 °C), so air is held as a **cool reserve**, used only when liquid is at
+capacity. `liquid_util_cap` (config) sets how full each liquid slot may run
+before spilling (1.0 = fill to compute capacity; lower holds thermal margin and
+spills sooner). Total load is **conserved exactly** — work is relocated between
+zones, never created or dropped; a `dropped` field reports any demand exceeding
+the whole cluster's capacity. The router is a pure placement layer: it returns
+per-rack utilization and touches neither the substrate nor the cooling/workload
+agents.
+
+### Validation (`scripts/validate_routing.py`, 4 h, fixed fans)
+
+Demand is the trace+burstiness signal scaled to a busy-cluster level
+(`DEMAND_SCALE = 2.5`, peak ~21 units vs. one zone's capacity of 15) so it
+periodically exceeds liquid capacity and the routing decision bites. Compared
+against a naive even 50/50 split:
+
+| Policy | Liquid peak | Air peak | Cluster peak |
+|---|---|---|---|
+| **Routed** (liquid-first) | 58.1 °C | **60.7 °C** (only on 28 % spill ticks) | **60.7 °C** |
+| Naive (even 50/50) | 52.0 °C | 74.2 °C | 74.2 °C |
+
+Liquid-first keeps the cluster **~13.5 °C cooler** and holds air at idle (~40 °C)
+except during overflow, while liquid stays safely in its headroom (<75 °C).
+Fixed fans are used to isolate the routing effect; the cooling/workload agents
+compose on top in a later phase.
+
+Plots written to `outputs/`:
+- `routing_load_split.png` — liquid load fills to its capacity line, then air
+  takes the overflow (spill).
+- `routing_air_vs_liquid_temp.png` — air & liquid temperature, routed vs. naive:
+  routed air stays a cool reserve while naive air runs hot toward 75 °C.
+
+### Boundary for later phases
+
+Two racks only (not a full multi-rack cluster); the router runs standalone with
+fixed fans rather than composed with the per-rack cooling/workload agents in one
+loop; and balancing/predictive routing policies are deferred. Those are the next
+steps.
+
+## Phase 7 — server-room composition + cooling energy
+
+`src/room.py` runs the **whole control stack together** over a ~50-rack room
+(35 air + 15 liquid). Each tick:
+
+```
+cross-zone router  ->  per-rack Cooling Agent (fan/pump ω)
+                   ->  per-rack Workload Agent (priority shedding)
+                   ->  thermal step  ->  IT + cooling energy
+```
+
+Routing is liquid-first (`route=True`); `route=False` is the naive even-split
+baseline. Each rack carries its own cooling agent (latch) and workload agent
+(deferral buffer). The per-rack loop is the **"start medium, design for large"**
+form: it is fine to ~dozens of racks, and the loop body is the single
+vectorization point — batching state into `[R, n_slots]` arrays later collapses
+it to array ops (measured: ~300 racks in ~16 s, ~1000 in ~90 s) without changing
+the control logic.
+
+### Cooling-energy / PUE model (`src/energy.py`)
+
+A pure accounting layer (no physics change). Two power streams per rack:
+
+- **IT power** — the SPECpower draw summed over the rack's slots (the useful
+  compute), already produced by `Rack.step`.
+- **Cooling power** — the affinity (fan) law `P_cool = rated_w[kind] · ω^exponent`.
+  With the cubic default, ω = 2.5 costs **2.5³ ≈ 15.6×** rated power. Rated
+  powers are per zone *kind* (config): air fan 500 W, liquid pump 150 W at ω = 1.
+
+`PUE = (IT + cooling) / IT`. This is *why* the agents matter at scale: keeping
+air racks below the 75 °C fan-ramp threshold avoids the cube-law cost, and liquid
+pumps are cheap and rarely ramped.
+
+### Validation (`scripts/validate_room.py`)
+
+Aggregate room demand is the sum of one bursty stream per (rack, slot), scaled to
+a busy room. Two views — a busy time series and an energy-vs-load sweep —
+comparing liquid-first routing vs. naive even split.
+
+**Time series** (busy room, demand ≈ 57 % mean / 69 % peak of capacity):
+
+| Policy | Air peak | Liquid peak | IT | Cooling | PUE | TPI |
+|---|---|---|---|---|---|---|
+| **Routed** | **68.7 °C** | 58.1 °C | 170.0 kWh | 14.81 kWh | 1.087 | 1.000 |
+| Naive | 74.0 °C | 51.7 °C | 175.0 kWh | 14.81 kWh | 1.085 | 1.000 |
+
+**Energy-vs-load sweep** (steady-state, both at TPI = 1.0 — same work done):
+
+| Demand frac | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 |
+|---|---|---|---|---|---|---|
+| Cooling kW — routed | 19.75 | 19.75 | 19.75 | 19.75 | 19.75 | **19.75** |
+| Cooling kW — naive | 19.75 | 19.75 | 19.75 | 20.04 | 28.28 | **37.84** |
+| PUE — routed | 1.107 | 1.093 | 1.084 | 1.078 | 1.073 | 1.069 |
+| PUE — naive | 1.099 | 1.090 | 1.083 | 1.078 | 1.104 | 1.132 |
+
+Honest reading of the cost question:
+
+- **Temperature:** routing always helps — it keeps the hottest air racks ~5 °C
+  cooler and *below* the 75 °C fan-ramp threshold (routed air sits at ~0.86
+  utilization, naive at the full demand fraction; they straddle the cliff).
+- **Cooling energy:** identical at low/moderate load (neither ramps), then
+  routing wins decisively once naive crosses the cliff — at 90 % load naive's
+  fans hit the cube-law regime (**37.8 kW vs 19.8 kW, ~48 % less**) for the *same*
+  work (TPI 1.0 both).
+- **PUE has a crossover (~0.7 load):** below it, routing is slightly *worse*
+  (1.107 vs 1.099 at 0.4) because idling air racks lowers the IT denominator
+  while their fans still draw baseline power — we don't power down idle racks
+  yet. Above it, routing is clearly better (1.069 vs 1.132 at 0.9).
+
+So: the agents add no meaningful power themselves; routing's cost benefit is
+**real but load-dependent**, kicking in near capacity at the fan-ramp cliff. The
+low-load PUE penalty points straight at the next lever — idle-rack power-down /
+consolidation. Liquid stays safely in its headroom (~58 °C) throughout.
+
+Plots written to `outputs/`:
+- `room_temps_routed_vs_naive.png` — hottest air/liquid rack temperature over
+  time, routed vs. naive, with the 75 °C line.
+- `room_energy_vs_load.png` — steady-state cooling power and PUE vs. room demand,
+  routed vs. naive (the cost curve).
+
+### Feasibility / cost notes
+
+- **Compute:** the per-rack loop costs ~417 µs/rack/tick (dominated by the
+  cooling agent's 15-step forecast); ~50 racks runs comfortably, hundreds need
+  the vectorized-across-racks form.
+- **Agent "power":** the control agents are decision logic — negligible modelled
+  power; the real room cost is *cooling energy*, which this phase now measures.
+
+### Boundary for later phases
+
+~50 racks on the per-rack loop (not yet vectorized to hundreds); liquid-first
+routing only; cooling/workload/routing are composed but read each other directly
+(no real inter-agent message bus). Those are the next steps.

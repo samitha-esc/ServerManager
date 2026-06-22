@@ -82,14 +82,28 @@ def test_lti_route_steers_load_to_cooler_slots():
     assert routed[4] > routed[0]
 
 
-def test_lti_route_preserves_total_utilization():
+def test_lti_route_conserves_total_exactly():
     cfg = WorkloadAgentConfig()
     agent = WorkloadAgent(cfg, n_slots=10)
     u = np.random.default_rng(42).uniform(0.2, 0.8, 10)
     bands = agent.split_by_priority(u)
     t_node = np.linspace(40, 80, 10)
     routed = agent.lti_route(bands, t_node)
-    assert routed.sum() == pytest.approx(u.sum(), abs=0.01)
+    # Strict conservation: routing relocates work, never drops it.
+    assert routed.sum() == pytest.approx(u.sum(), abs=1e-9)
+
+
+def test_lti_route_conserves_total_even_with_saturation():
+    # High demand forces some slots to clip at 1.0; overflow must spill, not
+    # vanish. Total stays conserved as long as it fits (sum <= n).
+    cfg = WorkloadAgentConfig()
+    agent = WorkloadAgent(cfg, n_slots=6)
+    u = np.full(6, 0.9)  # sum 5.4, fits in capacity 6
+    bands = agent.split_by_priority(u)
+    t_node = np.array([90.0, 88.0, 70.0, 60.0, 55.0, 50.0])
+    routed = agent.lti_route(bands, t_node)
+    assert routed.max() <= 1.0 + 1e-12
+    assert routed.sum() == pytest.approx(u.sum(), abs=1e-9)
 
 
 def test_lti_route_clips_to_unit_range():
@@ -105,19 +119,32 @@ def test_lti_route_clips_to_unit_range():
 
 # --- Nominal passthrough (no throttle) --------------------------------------
 
-def test_nominal_mode_routes_all_load(config):
+def test_nominal_mode_passthrough_by_default(config):
     rack = Rack.from_config(config, "air")
-    agent = WorkloadAgent.from_config(config)
+    agent = WorkloadAgent.from_config(config)  # lti_enabled defaults to False
     u = np.full(rack.n_slots, 0.5)
-    # Warm the rack a bit so LTI has temperature gradients to work with.
     for _ in range(100):
         rack.step(0.5)
-    # First tick: no throttle signal yet visible (delay=1), so nominal.
+    # No throttle visible (delay=1) and LTI off -> transparent pass-through.
+    d = agent.step(u, _no_throttle(), rack, t=0)
+    assert d.routing == "passthrough"
+    assert d.throttle_active is False
+    # Effective load is byte-identical to the input (baseline unchanged).
+    np.testing.assert_array_equal(d.effective_utilization, u)
+
+
+def test_nominal_mode_lti_when_enabled(config):
+    rack = Rack.from_config(config, "air")
+    cfg = WorkloadAgentConfig.from_config({**config["workload_agent"],
+                                           "lti_enabled": True})
+    agent = WorkloadAgent(cfg, rack.n_slots)
+    u = np.full(rack.n_slots, 0.5)
+    for _ in range(100):
+        rack.step(0.5)
     d = agent.step(u, _no_throttle(), rack, t=0)
     assert d.routing == "lti"
-    assert d.throttle_active is False
-    # All load is still being executed (just redistributed).
-    assert d.effective_utilization.sum() == pytest.approx(u.sum(), abs=0.05)
+    # LTI conserves total load (relocates, never drops).
+    assert d.effective_utilization.sum() == pytest.approx(u.sum(), abs=1e-9)
 
 
 # --- Throttle shedding -----------------------------------------------------
@@ -295,26 +322,48 @@ def test_tpi_perfect_when_no_shedding():
     u = np.array([0.5, 0.5, 0.5])
     for t in range(10):
         agent.step(u, _no_throttle(), rack, t=t)
-    # No shedding in nominal mode — TPI should be ~1.0.
-    assert agent.tpi == pytest.approx(1.0, abs=0.05)
+    # No shedding in nominal mode — TPI should be exactly 1.0.
+    assert agent.tpi == pytest.approx(1.0)
 
 
-def test_tpi_drops_when_load_is_shed():
-    cfg = WorkloadAgentConfig()
-    agent = WorkloadAgent(cfg, n_slots=3)
-
+def _bench_rack(n_slots: int, temp: float):
     from src.rack import CoolingZone, Rack as R
     from src.thermal import ThermalParams
     from src.power import PowerModel
-    rack = R(n_slots=3, zone=CoolingZone("test", "air", 7.0, 22.0, 0.006),
+    rack = R(n_slots=n_slots, zone=CoolingZone("test", "air", 7.0, 22.0, 0.006),
              power_model=PowerModel(), thermal=ThermalParams(), dt=1.0)
+    rack.t_node = np.full(n_slots, temp)
+    return rack
 
+
+def test_deferral_alone_does_not_lower_tpi():
+    """Work parked in the buffer (not yet expired) must NOT count against TPI."""
+    cfg = WorkloadAgentConfig(p2_defer_limit_s=10_000)  # nothing expires in window
+    agent = WorkloadAgent(cfg, n_slots=3)
+    rack = _bench_rack(3, 78.0)
     u = np.array([0.8, 0.8, 0.8])
-    # Prime + throttle for several ticks.
-    for t in range(20):
+    for t in range(30):           # throttle active: P2/P3 deferred, none expire
+        rack.t_node = np.full(3, 78.0)
         agent.step(u, _throttle(), rack, t=t)
-    # TPI should be below 1.0 because P2/P3 were shed.
+    assert agent.buffer.size > 0          # work is genuinely parked
+    assert agent.total_expired == 0.0
+    assert agent.tpi == pytest.approx(1.0)  # in-flight work is not penalised
+
+
+def test_tpi_drops_only_when_work_expires():
+    cfg = WorkloadAgentConfig()  # p2_defer_limit_s = 45
+    agent = WorkloadAgent(cfg, n_slots=3)
+    rack = _bench_rack(3, 78.0)
+    u = np.array([0.8, 0.8, 0.8])
+    # Throttle continuously well past the 45 s P2 expiry window.
+    for t in range(120):
+        rack.t_node = np.full(3, 78.0)
+        agent.step(u, _throttle(), rack, t=t)
+    assert agent.total_expired > 0.0
     assert agent.tpi < 1.0
+    # Matches the definition exactly: executed / (executed + expired).
+    expected = agent.total_executed / (agent.total_executed + agent.total_expired)
+    assert agent.tpi == pytest.approx(expected)
 
 
 # --- Integration: full loop with CoolingAgent + WorkloadAgent ---------------
@@ -378,10 +427,62 @@ def test_workload_agent_reduces_peak_under_stress(config):
 
 # --- Config plumbing --------------------------------------------------------
 
+def test_priority_fractions_must_sum_to_one():
+    with pytest.raises(ValueError, match="sum to 1.0"):
+        WorkloadAgentConfig(priority_fractions=(0.2, 0.2, 0.2, 0.2))
+
+
+def test_priority_fractions_must_have_four_entries():
+    with pytest.raises(ValueError, match="4 entries"):
+        WorkloadAgentConfig(priority_fractions=(0.5, 0.5))
+
+
+def test_priority_fractions_must_be_non_negative():
+    with pytest.raises(ValueError, match="non-negative"):
+        WorkloadAgentConfig(priority_fractions=(0.6, 0.6, -0.1, -0.1))
+
+
 def test_config_drives_all_params(config):
     agent = WorkloadAgent.from_config(config)
+    assert agent.config.lti_enabled is False
     assert agent.config.priority_fractions == (0.20, 0.25, 0.30, 0.25)
     assert agent.config.p1_throttle_fraction == 0.15
     assert agent.config.p1_throttle_temp == 83.0
     assert agent.config.p2_defer_limit_s == 45
     assert agent.config.propagation_delay_ticks == 1
+
+
+# --- Baseline regression: default agent must not change nominal behaviour -----
+
+def test_default_agent_preserves_nominal_baseline(config):
+    """With default config (LTI off) and no throttle ever firing, the rack with
+    the WorkloadAgent must behave byte-identically to the cooling-only baseline."""
+    n_slots = int(config["rack"]["n_slots"])
+    loader = TraceLoader.from_config(config, n_slots)
+    bcfg = BurstConfig.from_config(config["burstiness"])
+    util = inject_bursts(loader.utilization[:, :1500], bcfg)
+
+    # Cooling-only baseline (Phase 4 behaviour).
+    rack_base = Rack.from_config(config, "air")
+    cool_base = CoolingAgent.from_config(config)
+    base_temps = np.empty((n_slots, util.shape[1]))
+    for t in range(util.shape[1]):
+        cool_base.control(rack_base, util[:, t])
+        rack_base.step(util[:, t])
+        base_temps[:, t] = rack_base.t_node
+
+    # Cooling + default WorkloadAgent.
+    rack_wa = Rack.from_config(config, "air")
+    cool_wa = CoolingAgent.from_config(config)
+    work_wa = WorkloadAgent.from_config(config)
+    wa_temps = np.empty((n_slots, util.shape[1]))
+    for t in range(util.shape[1]):
+        cd = cool_wa.control(rack_wa, util[:, t])
+        wd = work_wa.step(util[:, t], cd, rack_wa, t)
+        # Nominal pass-through: effective load equals the raw input exactly.
+        np.testing.assert_array_equal(wd.effective_utilization, util[:, t])
+        rack_wa.step(wd.effective_utilization)
+        wa_temps[:, t] = rack_wa.t_node
+
+    np.testing.assert_array_equal(base_temps, wa_temps)
+    assert work_wa.tpi == pytest.approx(1.0, abs=1e-9)  # nothing dropped

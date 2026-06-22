@@ -1,22 +1,27 @@
 """Workload Agent (Phase 5) — priority-aware load routing and shedding.
 
 Sits between the trace-driven utilization signal and the physical rack as a
-smart filter.  During nominal operation it uses **Least-Thermal-Intensity (LTI)
-routing** to steer load toward cooler slots; during a thermal emergency
-(CoolingAgent ``THROTTLE_REQUEST``) it enforces a **4-tier priority matrix**
-that preserves critical work while shedding delay-tolerant load.
+smart filter.  During a thermal emergency (CoolingAgent ``THROTTLE_REQUEST``) it
+enforces a **4-tier priority matrix** that preserves critical work while shedding
+delay-tolerant load.  During nominal operation it is a transparent pass-through
+by default; **Least-Thermal-Intensity (LTI) routing** — steering load toward
+cooler slots — is available as an opt-in (``lti_enabled``) and, when on, strictly
+conserves total load.
 
 Execution flow (every 1-second simulation tick):
 
 1. **Intercept & Triage** — split each slot's raw utilization into four
    priority bands (P0-Critical … P3-Low) using configurable fractions.
 2. **Environmental Check** — read the CoolingAgent's ``throttle_request``
-   from the *previous* tick (1-tick propagation delay models the 500 µs
-   leaf-spine network latency).
+   through a configurable inter-agent staleness delay (default 1 tick = 1 s at
+   dt = 1 s). This stands in for the not-yet-built inter-agent message bus; it
+   is decision/propagation staleness, not a literal network wire delay (real
+   latency is ~µs, far below the timestep).
 3. **Decision & Routing Engine**
 
-   *Nominal (Safe)*: route all load using LTI — intentionally fill cooler,
-   lower slots first to flatten the thermal gradient.
+   *Nominal (Safe)*: pass load through unchanged (baseline preserved), or — if
+   ``lti_enabled`` — fill cooler, lower slots first to flatten the gradient
+   while conserving total load.
 
    *Throttled (Emergency)*: enforce the priority matrix:
 
@@ -67,6 +72,11 @@ PRIORITY_NAMES = ("P0-Critical", "P1-High", "P2-Medium", "P3-Low")
 class WorkloadAgentConfig:
     """Tunable parameters for the Workload Agent (all from config)."""
 
+    # Least-Thermal-Intensity routing toggle. Default OFF: nominal operation is
+    # a transparent pass-through, so the baseline simulation is unchanged. When
+    # enabled, routing strictly conserves total load (relocates, never drops).
+    lti_enabled: bool = False
+
     # Share of each slot's utilization assigned to each priority tier.
     # Index 0 = P0 (critical), index 3 = P3 (low).  Must sum to 1.0.
     priority_fractions: tuple[float, ...] = (0.20, 0.25, 0.30, 0.25)
@@ -78,14 +88,36 @@ class WorkloadAgentConfig:
     # Max seconds P2 tasks sit in the deferral buffer before expiry.
     p2_defer_limit_s: int = 45
 
-    # Throttle signal propagation delay (leaf-spine network model).
+    # Inter-agent signal staleness, in ticks: the WorkloadAgent reacts to the
+    # CoolingAgent's throttle this many ticks late. A stand-in for the not-yet-
+    # built inter-agent message bus (a later phase). At dt = 1 s, 1 tick = 1 s;
+    # true network latency (~µs) is far below the timestep, so this models
+    # decision/propagation staleness, not a literal wire delay.
     propagation_delay_ticks: int = 1
+
+    def __post_init__(self) -> None:
+        # The 4-tier priority matrix must partition each slot's load exactly.
+        if len(self.priority_fractions) != 4:
+            raise ValueError(
+                "priority_fractions must have exactly 4 entries (P0-P3), got "
+                f"{len(self.priority_fractions)}"
+            )
+        if any(f < 0.0 for f in self.priority_fractions):
+            raise ValueError("priority_fractions must be non-negative")
+        total = sum(self.priority_fractions)
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"priority_fractions must sum to 1.0, got {total:.6f}"
+            )
+        if self.propagation_delay_ticks < 0:
+            raise ValueError("propagation_delay_ticks must be >= 0")
 
     @classmethod
     def from_config(cls, cfg: dict) -> "WorkloadAgentConfig":
         """Build from the ``workload_agent`` section of the config dict."""
         fracs = cfg.get("priority_fractions", [0.20, 0.25, 0.30, 0.25])
         return cls(
+            lti_enabled=bool(cfg.get("lti_enabled", False)),
             priority_fractions=tuple(float(f) for f in fracs),
             p1_throttle_fraction=float(cfg.get("p1_throttle_fraction", 0.15)),
             p1_throttle_temp=float(cfg.get("p1_throttle_temp", 83.0)),
@@ -249,42 +281,51 @@ class WorkloadAgent:
 
     @staticmethod
     def lti_route(priority_loads: List[FloatArray],
-                  t_node: FloatArray) -> FloatArray:
-        """Least-Thermal-Intensity routing: redistribute load toward cooler slots.
+                  t_node: FloatArray, bias: float = 1.5) -> FloatArray:
+        """Least-Thermal-Intensity routing: place the rack's total load on the
+        coolest slots first, **conserving total load exactly**.
 
-        Sorts slots by current temperature (ascending) and applies a bias that
-        steers more load toward cooler slots while preserving total utilization.
-        The redistribution is gentle (weighted by inverse-temperature-rank) to
-        avoid unrealistic load teleportation.
+        The total demand across the rack is redistributed in proportion to
+        per-slot thermal weights (coolest slot weighted highest), with a
+        water-filling pass that caps each slot at 1.0 and re-allocates the
+        overflow to the remaining cooler slots. This relocates work toward
+        cooler nodes to flatten the gradient; it never creates or drops load.
+        Total demand is conserved to floating-point precision (it always fits
+        because each input slot's load is ≤ 1.0, so the sum is ≤ n).
         """
         n = t_node.shape[0]
-        total_per_slot = sum(p for p in priority_loads)
+        demand = float(sum(p for p in priority_loads).sum())
+        if demand <= 0.0:
+            return np.zeros(n, dtype=np.float64)
 
-        # Rank slots by temperature: coolest = rank 0.
-        order = np.argsort(t_node)  # indices sorted coolest → hottest
-        # Weight: coolest slot gets the highest weight.
-        weights = np.zeros(n, dtype=np.float64)
-        rank_weights = np.linspace(1.5, 0.5, n)  # coolest gets 1.5×, hottest 0.5×
-        for rank, slot in enumerate(order):
-            weights[slot] = rank_weights[rank]
+        # Thermal weights: coolest slot highest. linspace(bias, 2-bias) averages
+        # to 1.0; only the ratios matter for the proportional split below.
+        order = np.argsort(t_node)              # coolest → hottest
+        rank_weights = np.linspace(bias, 2.0 - bias, n)
+        w = np.zeros(n, dtype=np.float64)
+        w[order] = np.clip(rank_weights, 1e-9, None)
 
-        # Scale so total utilization is preserved per slot.
-        # The redistribution is applied as: effective[s] = total[s] * w[s] / mean(w)
-        # but we must ensure no slot exceeds 1.0.
-        mean_w = weights.mean()
-        effective = total_per_slot * (weights / mean_w)
-        effective = np.clip(effective, 0.0, 1.0)
+        # Water-fill: hand out `demand` ∝ weights, capping slots at 1.0 and
+        # spilling the remainder onto the still-open (cooler) slots.
+        effective = np.zeros(n, dtype=np.float64)
+        active = np.ones(n, dtype=bool)
+        remaining = demand
+        for _ in range(n):
+            wa = np.where(active, w, 0.0)
+            s = wa.sum()
+            if remaining <= 1e-12 or s <= 0.0:
+                break
+            alloc = effective + remaining * wa / s
+            over = active & (alloc > 1.0)
+            if not over.any():
+                effective = alloc
+                remaining = 0.0
+                break
+            effective[over] = 1.0
+            active[over] = False
+            remaining = demand - effective.sum()
 
-        # Redistribute any overflow back to underloaded slots.
-        excess = effective.sum() - total_per_slot.sum()
-        if excess > 1e-12:
-            headroom = 1.0 - effective
-            headroom_total = headroom.sum()
-            if headroom_total > 1e-12:
-                effective -= excess * (headroom / headroom_total)
-                effective = np.clip(effective, 0.0, 1.0)
-
-        return effective
+        return np.clip(effective, 0.0, 1.0)
 
     # --- Throttle-mode shedding ---------------------------------------------
 
@@ -351,9 +392,10 @@ class WorkloadAgent:
         raw = np.asarray(raw_utilization, dtype=np.float64)
         self._total_input += float(raw.sum())
 
-        # --- Stage 2: Environmental Check (with propagation delay) ----------
+        # --- Stage 2: Environmental Check (with staleness delay) ------------
         # Write the current throttle into the ring buffer and read the delayed
-        # value.  This models the 500 µs leaf-spine latency as a 1-tick delay.
+        # value: the agent reacts to the cooling decision `propagation_delay_ticks`
+        # ticks late (inter-agent staleness; stand-in for the future message bus).
         current_throttle = (
             cooling_decision.throttle_request if cooling_decision is not None
             else False
@@ -377,11 +419,17 @@ class WorkloadAgent:
             )
             routing = "throttled"
         else:
-            effective = self.lti_route(priority_loads, rack.t_node)
             shed = (0.0, 0.0, 0.0, 0.0)
-            routing = "lti"
+            if self.config.lti_enabled:
+                # Thermal-aware routing (opt-in): conserves total load.
+                effective = self.lti_route(priority_loads, rack.t_node)
+                routing = "lti"
+            else:
+                # Default: transparent pass-through — baseline is unchanged.
+                effective = raw.copy()
+                routing = "passthrough"
 
-            # Drain buffer when throttle is clear.
+            # Drain deferred work back in once the emergency has cleared.
             headroom = np.clip(1.0 - effective, 0.0, 1.0)
             reinjected = self.buffer.drain(
                 t, throttle_active=False,
@@ -404,14 +452,24 @@ class WorkloadAgent:
 
     @property
     def tpi(self) -> float:
-        """Task Preservation Index: executed / total input.
+        """Task Preservation Index: ``executed / (executed + expired)``.
 
-        A TPI of 1.0 means every unit of incoming load was executed; values
-        below 1.0 indicate some work was shed or expired.
+        Only *permanently lost* work (P2 tasks that timed out in the buffer)
+        counts against the score. Work still sitting in the deferral buffer is
+        neither credited nor penalised — it is in-flight and will either drain
+        (becoming executed) or expire (becoming lost) later, at which point it
+        enters the ratio. A TPI of 1.0 means nothing offered has been lost.
+
+        Note: P1 throttling reduces compute *rate* (the task continues, just
+        slower) rather than dropping a task, so it is treated as in-flight, not
+        loss; P3 is held and drains when the alarm clears, so it is preserved.
         """
-        if self._total_input <= 0:
+        executed = self._total_executed
+        expired = self.buffer.total_expired
+        denom = executed + expired
+        if denom <= 0:
             return 1.0
-        return self._total_executed / self._total_input
+        return executed / denom
 
     @property
     def total_expired(self) -> float:

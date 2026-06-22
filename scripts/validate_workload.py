@@ -84,39 +84,55 @@ def _stress_kcool(t: int, nom_k: float) -> float:
 # NOMINAL scenario
 # ---------------------------------------------------------------------------
 
-def run_nominal(config: dict, util: np.ndarray):
-    """Bursty load, both agents active."""
-    n_slots, n = util.shape
+def _simulate_nominal(config: dict, util: np.ndarray, workload: WorkloadAgent | None):
+    """Run cooling + (optional) workload over the bursty load.
 
-    # With both agents.
+    Returns (per-slot temps, effective-load-sum per tick, tpi, passthrough_ok)
+    where passthrough_ok is True iff every tick's effective load equalled the
+    raw input (only meaningful when the workload agent is in pass-through).
+    """
+    n_slots, n = util.shape
     rack = Rack.from_config(config, "air")
     cooling = CoolingAgent.from_config(config)
-    workload = WorkloadAgent.from_config(config)
-
-    Tmax = np.empty(n)
+    temps = np.empty((n_slots, n))
     eff_total = np.empty(n)
-    orig_total = np.empty(n)
-    fan = np.empty(n)
-
+    passthrough_ok = True
     for t in range(n):
         cd = cooling.control(rack, util[:, t])
-        wd = workload.step(util[:, t], cd, rack, t)
-        rack.step(wd.effective_utilization)
-        Tmax[t] = rack.t_node.max()
-        eff_total[t] = wd.effective_utilization.sum()
-        orig_total[t] = wd.original_utilization.sum()
-        fan[t] = cd.omega_fan
+        if workload is None:
+            u = util[:, t]
+        else:
+            wd = workload.step(util[:, t], cd, rack, t)
+            u = wd.effective_utilization
+            if not np.array_equal(u, util[:, t]):
+                passthrough_ok = False
+        rack.step(u)
+        temps[:, t] = rack.t_node
+        eff_total[t] = float(u.sum())
+    tpi = workload.tpi if workload is not None else 1.0
+    return temps, eff_total, tpi, passthrough_ok
 
-    # Without workload agent (cooling only).
-    rack_co = Rack.from_config(config, "air")
-    cool_co = CoolingAgent.from_config(config)
-    Tmax_co = np.empty(n)
-    for t in range(n):
-        cool_co.control(rack_co, util[:, t])
-        rack_co.step(util[:, t])
-        Tmax_co[t] = rack_co.t_node.max()
 
-    return Tmax, Tmax_co, eff_total, orig_total, fan, workload.tpi
+def run_nominal(config: dict, util: np.ndarray):
+    """Three runs: cooling-only baseline, +workload (default/off), +workload (LTI on)."""
+    import copy
+
+    cfg_lti = copy.deepcopy(config)
+    cfg_lti["workload_agent"] = {**config.get("workload_agent", {}),
+                                 "lti_enabled": True}
+
+    base_temps, base_eff, _, _ = _simulate_nominal(config, util, None)
+    def_temps, def_eff, def_tpi, passthrough_ok = _simulate_nominal(
+        config, util, WorkloadAgent.from_config(config))
+    lti_temps, lti_eff, lti_tpi, _ = _simulate_nominal(
+        cfg_lti, util, WorkloadAgent.from_config(cfg_lti))
+
+    return {
+        "base_temps": base_temps, "base_eff": base_eff,
+        "def_temps": def_temps, "def_eff": def_eff, "def_tpi": def_tpi,
+        "lti_temps": lti_temps, "lti_eff": lti_eff, "lti_tpi": lti_tpi,
+        "passthrough_ok": passthrough_ok,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -173,40 +189,41 @@ def run_degraded(config: dict):
 # Plots
 # ---------------------------------------------------------------------------
 
-def plot_nominal(Tmax, Tmax_co, eff_total, orig_total, fan) -> Path:
-    n = Tmax.shape[0]
+def plot_nominal(res: dict) -> Path:
+    base_temps = res["base_temps"]
+    def_temps = res["def_temps"]
+    lti_temps = res["lti_temps"]
+    n = base_temps.shape[1]
     t_min = np.arange(n) / 60.0
 
-    fig, (ax_t, ax_u) = plt.subplots(
-        2, 1, figsize=(13, 8), sharex=True,
-        gridspec_kw={"height_ratios": [2, 1]}
+    fig, (ax_t, ax_g) = plt.subplots(
+        1, 2, figsize=(14, 5), gridspec_kw={"width_ratios": [3, 1]}
     )
 
-    # Temperature panel.
-    ax_t.plot(t_min, Tmax_co, color="tab:red", lw=0.8, alpha=0.7,
-              label=f"cooling-only: peak {Tmax_co.max():.1f} °C")
-    ax_t.plot(t_min, Tmax, color="tab:green", lw=0.9,
-              label=f"cooling + workload: peak {Tmax.max():.1f} °C")
+    # Hottest-slot temperature over time.
+    ax_t.plot(t_min, base_temps.max(axis=0), color="tab:red", lw=0.9,
+              label=f"cooling-only baseline: peak {base_temps.max():.1f} °C")
+    ax_t.plot(t_min, def_temps.max(axis=0), color="black", lw=0.9, ls=":",
+              label=f"+ workload (default, LTI off): peak {def_temps.max():.1f} °C")
+    ax_t.plot(t_min, lti_temps.max(axis=0), color="tab:green", lw=0.8, alpha=0.8,
+              label=f"+ workload (LTI on): peak {lti_temps.max():.1f} °C")
     ax_t.axhline(75, color="darkorange", ls="--", lw=1, alpha=0.7, label="75 °C warn")
-    ax_t.axhline(80, color="red", ls="--", lw=1, alpha=0.7, label="80 °C critical")
     ax_t.set_ylabel("hottest-slot temperature [°C]")
-    ax_t.set_title("Nominal bursty load — LTI routing + priority-aware shedding")
+    ax_t.set_xlabel("time [min]")
+    ax_t.set_title("Nominal load — default agent overlays baseline; LTI (opt-in) flattens")
     ax_t.legend(loc="lower right", fontsize=8)
 
-    # Fan overlay.
-    axf = ax_t.twinx()
-    axf.plot(t_min, fan, color="tab:blue", lw=0.6, alpha=0.4)
-    axf.set_ylabel("ω_fan", color="tab:blue")
-    axf.tick_params(axis="y", labelcolor="tab:blue")
-
-    # Utilization panel.
-    ax_u.plot(t_min, orig_total, color="tab:gray", lw=0.7, alpha=0.6,
-              label="original (sum)")
-    ax_u.plot(t_min, eff_total, color="tab:blue", lw=0.8,
-              label="effective (sum, after agent)")
-    ax_u.set_ylabel("total utilization")
-    ax_u.set_xlabel("time [min]")
-    ax_u.legend(loc="upper right", fontsize=8)
+    # Time-averaged per-slot profile: default vs LTI (gradient flattening).
+    slots = np.arange(base_temps.shape[0])
+    ax_g.plot(def_temps.mean(axis=1), slots, "o-", color="black",
+              label="default (off)")
+    ax_g.plot(lti_temps.mean(axis=1), slots, "o-", color="tab:green",
+              label="LTI on")
+    ax_g.set_xlabel("time-avg temp [°C]")
+    ax_g.set_ylabel("slot (0 = bottom)")
+    ax_g.set_title("Vertical gradient")
+    ax_g.legend(loc="upper left", fontsize=8)
+    ax_g.grid(True, alpha=0.3)
 
     fig.tight_layout()
     out = OUTPUT_DIR / "workload_nominal_lti.png"
@@ -284,13 +301,34 @@ def main() -> None:
     n_win = min(int(NOMINAL_HOURS * 3600), loader.n_timesteps)
     util = inject_bursts(loader.utilization[:, :n_win], bcfg)
 
-    Tmax, Tmax_co, eff, orig, fan, tpi_nom = run_nominal(config, util)
+    res = run_nominal(config, util)
 
-    print("=== NOMINAL (real bursty load, both agents active) ===")
-    print(f"  peak cooling-only          : {Tmax_co.max():.2f} °C")
-    print(f"  peak cooling + workload    : {Tmax.max():.2f} °C")
-    print(f"  TPI                        : {tpi_nom:.4f}")
-    print(f"  effective util range        : {eff.min():.2f}–{eff.max():.2f}")
+    base_peak = res["base_temps"].max()
+    def_peak = res["def_temps"].max()
+    lti_peak = res["lti_temps"].max()
+    base_spread = float((res["def_temps"].mean(axis=1).max()
+                         - res["def_temps"].mean(axis=1).min()))
+    lti_spread = float((res["lti_temps"].mean(axis=1).max()
+                        - res["lti_temps"].mean(axis=1).min()))
+
+    print("=== NOMINAL (real bursty load) ===")
+    print(f"  peak cooling-only baseline   : {base_peak:.2f} °C")
+    print(f"  peak + workload (default/off): {def_peak:.2f} °C  "
+          f"(TPI {res['def_tpi']:.4f})")
+    print(f"  peak + workload (LTI on)     : {lti_peak:.2f} °C  "
+          f"(TPI {res['lti_tpi']:.4f})")
+    print(f"  gradient spread default/LTI  : {base_spread:.2f} / {lti_spread:.2f} °C")
+
+    # Regression: the default agent must not change the baseline at all.
+    assert res["passthrough_ok"], "default agent altered the nominal load"
+    assert np.array_equal(res["base_temps"], res["def_temps"]), \
+        "default agent changed the nominal temperature trajectory"
+    assert abs(res["def_tpi"] - 1.0) < 1e-9, "default agent dropped work"
+    # LTI (opt-in) must conserve load exactly.
+    assert np.allclose(res["lti_eff"], res["base_eff"], atol=1e-9), \
+        "LTI routing did not conserve total load"
+    assert abs(res["lti_tpi"] - 1.0) < 1e-9, "LTI dropped work"
+    print("  regression: default == baseline ✓   LTI conserves load ✓")
 
     # ---- Degraded scenario --------------------------------------------------
     (dT, dT_no, d_eff, d_thr, d_buf,
@@ -311,7 +349,7 @@ def main() -> None:
     assert d_tpi > 0.3, f"TPI too low: {d_tpi:.3f}"
 
     # Plots.
-    p1 = plot_nominal(Tmax, Tmax_co, eff, orig, fan)
+    p1 = plot_nominal(res)
     p2 = plot_degraded(dT, dT_no, d_eff, d_thr, d_buf, d_shed, d_tpi)
     for p in (p1, p2):
         print(f"  saved {p.relative_to(ROOT)}")

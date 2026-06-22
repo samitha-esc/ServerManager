@@ -109,6 +109,12 @@ cooling_agent:
 # shedding (emergency). Maximises the Task Preservation Index by delaying
 # delay-tolerant data (P2/P3) rather than crashing critical workflows (P0).
 workload_agent:
+  # Least-Thermal-Intensity routing: redistribute total rack load toward cooler
+  # slots. Default OFF so nominal runs are byte-identical to the Phase 1-4
+  # baseline (no silent change to default behaviour). When enabled the routing
+  # strictly conserves total load (it relocates work, never drops it).
+  lti_enabled: false
+
   # Share of each slot's total utilization assigned to each priority tier.
   # P0 = Critical (live user requests), P1 = High (AI training),
   # P2 = Medium (ETL/pipelines), P3 = Low (backups/logs). Must sum to 1.0.
@@ -119,6 +125,38 @@ workload_agent:
 
   p2_defer_limit_s: 45        # [s] max time P2 tasks sit in buffer before expiry
 
-  # Network latency model: throttle signal from CoolingAgent travels over a
-  # modeled Leaf-Spine topology, incurring a 1-tick propagation delay.
+  # Inter-agent signal staleness in ticks: the WorkloadAgent reacts to the
+  # CoolingAgent's throttle this many ticks late (default 1 tick = 1 s). This is
+  # a stand-in for the not-yet-built inter-agent message bus, NOT a literal
+  # network delay — real latency (~µs) is far below the 1 s timestep. Set 0 for
+  # same-tick (tightly coupled) response.
   propagation_delay_ticks: 1
+
+# Cross-zone routing (Phase 6). Places cluster demand across a 2-rack air+liquid
+# cluster, conserving total load. Policy: fill the cooler LIQUID zone first (up
+# to liquid_util_cap per slot), then spill the overflow to AIR. Liquid is the
+# preferred zone (runs far cooler); air is the fallback used only when liquid is
+# at capacity. The router writes per-rack utilization; it does not touch the
+# substrate or the cooling/workload agents.
+routing:
+  liquid_util_cap: 1.0   # max per-slot utilization placed on liquid before spill
+                         # (1.0 = fill to compute capacity; lower holds thermal
+                         # margin and spills to air earlier)
+
+# Cooling-energy / PUE model (Phase 7). Cooling power follows the affinity (fan)
+# law P = rated_w[kind] * omega^exponent, so driving fans hard is expensive
+# (omega 2.5 -> 2.5^3 ~ 15.6x). Rated powers are per zone KIND (config-only to
+# add a technology). Defaults are illustrative for a ~6 kW rack.
+energy:
+  exponent: 3.0          # affinity-law exponent (3 = cubic fan/pump law)
+  rated_w:
+    air: 500.0           # [W] air fan power at omega=1 (~8% of a full rack)
+    liquid: 150.0        # [W] liquid pump power at omega=1 (~2.5%; rarely ramped)
+
+# Server-room composition (Phase 7). A mix of air and liquid racks. The full
+# stack (cross-zone router -> per-rack cooling + workload agents) runs over this
+# room. ~50 racks runs on the per-rack loop; the design vectorizes to 100s later.
+room:
+  n_air_racks: 35        # most of the room is conventional air-cooled
+  n_liquid_racks: 15     # a premium liquid-cooled pool (cooler, more efficient)
+  demand_scale: 1.0      # multiplier on aggregate room demand (1.0 = as-generated)
