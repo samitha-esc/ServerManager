@@ -102,3 +102,23 @@ cooling_agent:
   fan_max: 2.5             # omega_fan at the top of the warning band / in critical
   release_c: 72.0          # [°C] hysteresis: critical latch clears below this
   fan_base: 1.0            # omega_fan in the safe zone
+
+# Workload Agent (Phase 5). Priority-aware load routing and shedding.
+# Sits between the trace utilization and the rack; reads the CoolingAgent's
+# THROTTLE_REQUEST to decide between LTI routing (nominal) and priority-based
+# shedding (emergency). Maximises the Task Preservation Index by delaying
+# delay-tolerant data (P2/P3) rather than crashing critical workflows (P0).
+workload_agent:
+  # Share of each slot's total utilization assigned to each priority tier.
+  # P0 = Critical (live user requests), P1 = High (AI training),
+  # P2 = Medium (ETL/pipelines), P3 = Low (backups/logs). Must sum to 1.0.
+  priority_fractions: [0.20, 0.25, 0.30, 0.25]
+
+  p1_throttle_fraction: 0.15  # P1 compute reduction when node >= p1_throttle_temp
+  p1_throttle_temp: 83.0      # [°C] per-node threshold for P1 throttling
+
+  p2_defer_limit_s: 45        # [s] max time P2 tasks sit in buffer before expiry
+
+  # Network latency model: throttle signal from CoolingAgent travels over a
+  # modeled Leaf-Spine topology, incurring a 1-tick propagation delay.
+  propagation_delay_ticks: 1
