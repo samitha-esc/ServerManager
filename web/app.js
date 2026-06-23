@@ -55,14 +55,14 @@ function computeLayout() {
   const RACK_ZONE_W  = W - RACK_ZONE_X - 12;
 
   // Agent blocks
-  const agentPad = 18;
+  const agentPad = 24;
   const agentBlockW = AGENT_ZONE_W - agentPad * 2;
-  const agentBlockH = 44;
-  const laneH       = 32;
+  const agentBlockH = 56;
+  const laneH       = 40;
 
   // Network Traffic Agent
-  const NET_Y = 20;
-  const NET_H = 58;
+  const NET_Y = 24;
+  const NET_H = 70;
 
   // 4 priority lanes (inside Workload Agent)
   const LANE_START_Y = NET_Y + NET_H + 40; // increased gap
@@ -350,8 +350,6 @@ function drawAgentZone() {
     drawThermalSentinel();
     drawCoolingAgent();
   }
-  
-  drawAgentArrows();
 }
 
 function drawNetworkAgent() {
@@ -363,17 +361,17 @@ function drawNetworkAgent() {
   const load = latestFrame?.agents?.scheduler?.load_pct || 0;
   const barW = (NET_W - 24) * (load / 100);
   ctx.fillStyle = 'rgba(255,255,255,0.06)';
-  fillRect(NET_X + 12, NET_Y + NET_H - 16, NET_W - 24, 6, 2);
+  fillRect(NET_X + 12, NET_Y + NET_H - 18, NET_W - 24, 8, 2);
   ctx.fillStyle = '#60a5fa';
-  if (barW > 0) fillRect(NET_X + 12, NET_Y + NET_H - 16, barW, 6, 2);
+  if (barW > 0) fillRect(NET_X + 12, NET_Y + NET_H - 18, barW, 8, 2);
 
   // Throughput text
   ctx.fillStyle = COL.dim;
-  ctx.font = `400 10px 'JetBrains Mono'`;
+  ctx.font = `400 13px 'JetBrains Mono'`;
   ctx.textAlign = 'left';
   const mbIn  = latestFrame?.agents?.scheduler?.bytes_in_mbps?.toFixed(1) || '0.0';
   const mbOut = latestFrame?.agents?.scheduler?.bytes_out_mbps?.toFixed(1) || '0.0';
-  ctx.fillText(`↓ ${mbIn} Mbps  ↑ ${mbOut} Mbps`, NET_X + 12, NET_Y + NET_H - 22);
+  ctx.fillText(`↓ ${mbIn} Mbps  ↑ ${mbOut} Mbps`, NET_X + 12, NET_Y + NET_H - 26);
 
   // Status badge
   const status = latestFrame?.agents?.scheduler?.status || 'NORMAL';
@@ -381,9 +379,9 @@ function drawNetworkAgent() {
   const badge   = burstOn ? 'BURST' : status;
   const badgeC  = burstOn ? COL.p1 : (status === 'THROTTLED' ? COL.tHot : COL.tOk);
   ctx.fillStyle = badgeC;
-  ctx.font = `700 9px 'JetBrains Mono'`;
+  ctx.font = `700 12px 'JetBrains Mono'`;
   ctx.textAlign = 'right';
-  ctx.fillText(badge, NET_X + NET_W - 10, NET_Y + 20);
+  ctx.fillText(badge, NET_X + NET_W - 10, NET_Y + 24);
 }
 
 function drawWorkloadAgent() {
@@ -405,9 +403,9 @@ function drawWorkloadAgent() {
 
     // Lane label
     ctx.fillStyle = PRIORITY_COLS[i];
-    ctx.font = `400 9px 'JetBrains Mono'`;
+    ctx.font = `400 12px 'JetBrains Mono'`;
     ctx.textAlign = 'left';
-    ctx.fillText(`P${i} ${PRIORITY_NAMES[i].split(' ')[1]}`, lx + 5, lane.y + laneH / 2 + 4);
+    ctx.fillText(`P${i} ${PRIORITY_NAMES[i].split(' ')[1]}`, lx + 5, lane.y + laneH / 2 + 5);
 
     // Priority load bar
     const pLoadKey = PRIORITY_NAMES[i];
@@ -415,9 +413,9 @@ function drawWorkloadAgent() {
     const barMaxW = lw - 90;
     const barX    = lx + 80;
     ctx.fillStyle = 'rgba(255,255,255,0.05)';
-    fillRect(barX, lane.y + 10, barMaxW, 6, 2);
+    fillRect(barX, lane.y + 12, barMaxW, 8, 2);
     ctx.fillStyle = PRIORITY_COLS[i] + 'aa';
-    fillRect(barX, lane.y + 10, barMaxW * (pLoad / 100), 6, 2);
+    fillRect(barX, lane.y + 12, barMaxW * (pLoad / 100), 8, 2);
 
     // Queue box (right end of lane)
     const qx = lx + lw - laneQW - 4;
@@ -427,17 +425,17 @@ function drawWorkloadAgent() {
       ctx.fillStyle = `rgba(248,113,113,${pulse})`;
       fillRect(qx, lane.y + 1, laneQW, laneH - 2, 2);
       ctx.fillStyle = COL.tHot;
-      ctx.font = `700 8px 'JetBrains Mono'`;
+      ctx.font = `700 11px 'JetBrains Mono'`;
       ctx.textAlign = 'center';
-      ctx.fillText('BLOCKED', qx + laneQW / 2, lane.y + laneH / 2 + 3);
+      ctx.fillText('BLOCKED', qx + laneQW / 2, lane.y + laneH / 2 + 4);
     } else {
       ctx.strokeStyle = `${PRIORITY_COLS[i]}33`;
       ctx.lineWidth = 1;
       strokeRect(qx, lane.y + 1, laneQW, laneH - 2, 2);
       ctx.fillStyle = COL.dim;
-      ctx.font = `400 8px 'JetBrains Mono'`;
+      ctx.font = `400 11px 'JetBrains Mono'`;
       ctx.textAlign = 'center';
-      ctx.fillText('QUEUE', qx + laneQW / 2, lane.y + laneH / 2 + 3);
+      ctx.fillText('QUEUE', qx + laneQW / 2, lane.y + laneH / 2 + 4);
     }
   });
 }
@@ -450,9 +448,9 @@ function drawThermalSentinel() {
   // Stats
   const hottest = Math.max(...Object.values(rackTemps), 22);
   ctx.fillStyle = COL.dim;
-  ctx.font = `400 9px 'JetBrains Mono'`;
+  ctx.font = `400 12px 'JetBrains Mono'`;
   ctx.textAlign = 'left';
-  ctx.fillText(`Max Predicted: ${hottest.toFixed(1)}°C`, THERM_X + 12, THERM_Y + 28);
+  ctx.fillText(`Max Predicted: ${hottest.toFixed(1)}°C`, THERM_X + 12, THERM_Y + 30);
 }
 
 function drawCoolingAgent() {
@@ -465,92 +463,16 @@ function drawCoolingAgent() {
   const arbStatus = latestFrame?.agents?.arbiter?.negotiation_status || 'NOMINAL';
   const arbColor  = throttleActive ? COL.tHot : COL.tOk;
   ctx.fillStyle = arbColor;
-  ctx.font      = `600 9px 'JetBrains Mono'`;
+  ctx.font      = `600 12px 'JetBrains Mono'`;
   ctx.textAlign = 'left';
-  ctx.fillText(arbStatus, COOL_X + 12, COOL_Y + 28);
+  ctx.fillText(arbStatus, COOL_X + 12, COOL_Y + 30);
 
   // Fan speed
   const shed = latestFrame?.agents?.arbiter?.shed_pct || 0;
   ctx.fillStyle = COL.dim;
-  ctx.font = `400 9px 'JetBrains Mono'`;
+  ctx.font = `400 12px 'JetBrains Mono'`;
   ctx.textAlign = 'right';
-  ctx.fillText(`shed=${shed.toFixed(0)}%`, COOL_X + COOL_W - 10, COOL_Y + 28);
-}
-
-function drawAgentArrows() {
-  const { NET_X, NET_Y, NET_W, NET_H, WORKLOAD_X, WORKLOAD_Y, WORKLOAD_W, WORKLOAD_H, THERM_X, THERM_Y, THERM_W, THERM_H, COOL_X, COOL_Y, COOL_W, COOL_H, AGENT_ZONE_W } = L;
-
-  if (currentMode === 'baseline') {
-    // Just Net -> Racks
-    drawFlowArrow(NET_X + NET_W, NET_Y + NET_H / 2, AGENT_ZONE_W + 2, L.H / 2, true);
-    return;
-  }
-
-  // Net → Workload
-  const ax = NET_X + NET_W;
-  const ay = NET_Y + NET_H / 2;
-  const bx = WORKLOAD_X;
-  const by = WORKLOAD_Y + 30;
-  drawFlowArrow(ax, ay, bx, by, agentPipeStep === 0);
-
-  // Workload → Thermal
-  const cx2 = WORKLOAD_X + WORKLOAD_W;
-  const cy2 = WORKLOAD_Y + WORKLOAD_H / 2;
-  const dx  = THERM_X + THERM_W;
-  const dy  = THERM_Y + THERM_H / 2;
-  drawFlowArrow(cx2, cy2, dx, dy, agentPipeStep === 1);
-
-  // Thermal <-> Cooling
-  const ex = THERM_X + THERM_W / 2;
-  const ey = THERM_Y + THERM_H;
-  const fx = COOL_X + COOL_W / 2;
-  const fy = COOL_Y;
-  
-  if (throttleActive) {
-    ctx.strokeStyle = COL.tWarn + 'cc';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 4]);
-    ctx.beginPath();
-    ctx.moveTo(ex, ey);
-    ctx.lineTo(fx, fy);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    arrowHead(fx, fy, Math.PI/2, COL.tWarn + 'cc');
-    arrowHead(ex, ey, -Math.PI/2, COL.tWarn + 'cc');
-  } else {
-    drawFlowArrow(ex, ey, fx, fy, agentPipeStep === 2);
-  }
-
-  // Cooling → Rack zone
-  drawFlowArrow(COOL_X + COOL_W, COOL_Y + COOL_H / 2, AGENT_ZONE_W + 2, L.H / 2, agentPipeStep >= 3);
-}
-
-function drawFlowArrow(x1, y1, x2, y2, lit) {
-  ctx.save();
-  ctx.strokeStyle = lit ? COL.ma + 'dd' : COL.dim + '55';
-  ctx.lineWidth   = lit ? 1.8 : 1;
-  if (lit) { ctx.shadowBlur = 8; ctx.shadowColor = COL.ma; }
-  ctx.beginPath();
-  ctx.moveTo(x1 + 2, y1);
-  ctx.lineTo(x2 - 6, y2);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  arrowHead(x2 - 2, y2, Math.atan2(y2 - y1, x2 - x1), lit ? COL.ma : COL.dim + '55');
-  ctx.restore();
-}
-
-function arrowHead(x, y, angle, color) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(-7, -3.5);
-  ctx.lineTo(-7, 3.5);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
+  ctx.fillText(`shed=${shed.toFixed(0)}%`, COOL_X + COOL_W - 10, COOL_Y + 30);
 }
 
 function drawAgentBlock(x, y, w, h, title, active, accentColor) {
@@ -574,9 +496,9 @@ function drawAgentBlock(x, y, w, h, title, active, accentColor) {
   fillRect(x + 1, y + 1, w - 2, 18, [5, 5, 0, 0]);
 
   ctx.fillStyle = active ? accentColor : COL.dim;
-  ctx.font = `${active ? 600 : 400} 9px 'JetBrains Mono'`;
+  ctx.font = `${active ? 600 : 400} 12px 'JetBrains Mono'`;
   ctx.textAlign = 'left';
-  ctx.fillText(title, x + 10, y + 13);
+  ctx.fillText(title, x + 12, y + 16);
 }
 
 // ── Rack Zone ──────────────────────────────────────────────────────────────
@@ -590,7 +512,7 @@ function drawRackZone() {
 
     // Floor label
     ctx.fillStyle = labelColor + '99';
-    ctx.font = `400 8px 'JetBrains Mono'`;
+    ctx.font = `400 11px 'JetBrains Mono'`;
     ctx.textAlign = 'left';
     ctx.fillText(floorLabel, RACK_ZONE_X + 2, f.y - 6);
 
@@ -626,9 +548,9 @@ function drawRackCell(id, rx, ry, rw, rh, temp, isLiquid) {
 
   // Temp text
   ctx.fillStyle = temp > 82 ? COL.tHot : (temp > 74 ? COL.tWarn : '#888');
-  ctx.font = `400 7px 'JetBrains Mono'`;
+  ctx.font = `400 10px 'JetBrains Mono'`;
   ctx.textAlign = 'center';
-  ctx.fillText(`${temp.toFixed(0)}°`, rx + rw / 2, ry + rh / 2 + 3);
+  ctx.fillText(`${temp.toFixed(0)}°`, rx + rw / 2, ry + rh / 2 + 4);
 }
 
 function lerpColor(a, b, t) {
@@ -783,7 +705,7 @@ function initCharts() {
   Chart.defaults.color            = '#636e7b';
   Chart.defaults.borderColor      = 'rgba(255,255,255,0.05)';
   Chart.defaults.font.family      = "'JetBrains Mono', monospace";
-  Chart.defaults.font.size        = 9;
+  Chart.defaults.font.size        = 11;
 
   const defs = [
     { id: 'energy',     key: 'energy',     type: 'line', yMin: 0 },
