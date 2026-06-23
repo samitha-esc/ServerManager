@@ -6,19 +6,19 @@
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const COL = {
-  bg0:    '#07090c',
-  bg1:    '#0d1117',
-  bg2:    '#131a22',
-  bg3:    '#1a2333',
-  border: 'rgba(255,255,255,0.08)',
-  txt:    '#d0d7de',
-  dim:    '#636e7b',
-  ma:     '#38bdf8',
-  base:   '#fb923c',
-  p0:     '#f87171',
-  p1:     '#fbbf24',
-  p2:     '#34d399',
-  p3:     '#818cf8',
+  bg0:    '#020617',
+  bg1:    '#0f172a',
+  bg2:    '#1e293b',
+  bg3:    '#334155',
+  border: 'rgba(148,163,184,0.1)',
+  txt:    '#f8fafc',
+  dim:    '#94a3b8',
+  ma:     '#22d3ee',
+  base:   '#818cf8',
+  p0:     '#0ea5e9',
+  p1:     '#38bdf8',
+  p2:     '#7dd3fc',
+  p3:     '#bae6fd',
   tOk:    '#34d399',
   tWarn:  '#fbbf24',
   tHot:   '#f87171',
@@ -50,22 +50,22 @@ function computeLayout() {
   const H = canvas.height;
 
   // Horizontal zones
-  const AGENT_ZONE_W = Math.floor(W * 0.38);  // left 38% = agent pipeline
-  const RACK_ZONE_X  = AGENT_ZONE_W + 8;       // right portion = rack grid
+  const AGENT_ZONE_W = Math.floor(W * 0.45);  // increased for more space
+  const RACK_ZONE_X  = AGENT_ZONE_W + 16;
   const RACK_ZONE_W  = W - RACK_ZONE_X - 12;
 
-  // Agent blocks (left half)
-  const agentPad = 14;
+  // Agent blocks
+  const agentPad = 18;
   const agentBlockW = AGENT_ZONE_W - agentPad * 2;
   const agentBlockH = 44;
   const laneH       = 32;
 
   // Network Traffic Agent
-  const NET_Y = 30;
+  const NET_Y = 20;
   const NET_H = 58;
 
   // 4 priority lanes (inside Workload Agent)
-  const LANE_START_Y = NET_Y + NET_H + 30;
+  const LANE_START_Y = NET_Y + NET_H + 40; // increased gap
   const LANES = [0,1,2,3].map(i => ({
     y:     LANE_START_Y + i * (laneH + 8),
     color: PRIORITY_COLS[i],
@@ -73,12 +73,19 @@ function computeLayout() {
     queueX: AGENT_ZONE_W - agentPad - 80,
   }));
 
-  // Cooling agent (below lanes)
-  const lastLaneBottom = LANES[3].y + laneH;
-  const COOL_Y = lastLaneBottom + 22;
-  const COOL_H = 52;
+  // Workload agent block
+  const WORKLOAD_Y = LANE_START_Y - 24;
+  const WORKLOAD_H = LANES[3].y + laneH - LANE_START_Y + 24 + 20;
 
-  // Rack grid (right half)
+  // Thermal Sentinel
+  const THERM_Y = WORKLOAD_Y + WORKLOAD_H + 25;
+  const THERM_H = 46;
+
+  // Cooling agent
+  const COOL_Y = THERM_Y + THERM_H + 20;
+  const COOL_H = 46;
+
+  // Rack grid
   const N_FLOORS = 5, N_PER_FLOOR = 10;
   const floorH      = Math.floor(H / (N_FLOORS + 1));
   const rackW       = Math.max(28, Math.floor((RACK_ZONE_W - (N_PER_FLOOR - 1) * 5) / N_PER_FLOOR));
@@ -94,16 +101,12 @@ function computeLayout() {
     W, H,
     agentPad, agentBlockW, agentBlockH, laneH, laneQW: 80,
     NET_X: agentPad, NET_Y, NET_W: agentBlockW, NET_H,
-    WORKLOAD_X: agentPad,
-    WORKLOAD_Y: LANE_START_Y - 24,
-    WORKLOAD_W: agentBlockW,
-    WORKLOAD_H: LANES[3].y + laneH - LANE_START_Y + 24 + 20,
+    WORKLOAD_X: agentPad, WORKLOAD_Y, WORKLOAD_W: agentBlockW, WORKLOAD_H,
     LANES,
+    THERM_X: agentPad, THERM_Y, THERM_W: agentBlockW, THERM_H,
     COOL_X: agentPad, COOL_Y, COOL_W: agentBlockW, COOL_H,
     AGENT_ZONE_W, RACK_ZONE_X, RACK_ZONE_W,
-    N_FLOORS, N_PER_FLOOR, floorH,
-    rackW, rackH,
-    FLOORS,
+    N_FLOORS, N_PER_FLOOR, floorH, rackW, rackH, FLOORS,
   };
 }
 
@@ -133,13 +136,24 @@ class Packet {
   update(dt) {
     const SPD = this.speed * speedMulti;
     if (this.stage === 0) {
-      // Travel from spawn to lane entrance
       this.x += SPD * 2.2;
-      const laneEntryX = L.WORKLOAD_X + 4;
-      if (this.x >= laneEntryX) {
-        this.stage = 1;
-        this.x = laneEntryX;
-        this.y = this.laneY;
+      
+      if (currentMode === 'baseline') {
+        const exitX = L.NET_X + L.NET_W - 2;
+        if (this.x >= exitX) {
+          this._assignRack();
+          this.stage = 3;
+          this.routeT = 0;
+          this.routeSrcX = this.x;
+          this.routeSrcY = L.NET_Y + L.NET_H / 2;
+        }
+      } else {
+        const laneEntryX = L.WORKLOAD_X + 4;
+        if (this.x >= laneEntryX) {
+          this.stage = 1;
+          this.x = laneEntryX;
+          this.y = this.laneY;
+        }
       }
     } else if (this.stage === 1) {
       if (throttleActive && this.priority >= 2) {
@@ -161,7 +175,6 @@ class Packet {
         }
       }
     } else if (this.stage === 2) {
-      // Travel through cooling agent block
       this.x += SPD * 1.5;
       const coolExitX = L.COOL_X + L.COOL_W;
       if (this.x >= coolExitX) {
@@ -331,8 +344,13 @@ function drawBackground() {
 // ── Agent Zone ─────────────────────────────────────────────────────────────
 function drawAgentZone() {
   drawNetworkAgent();
-  drawWorkloadAgent();
-  drawCoolingAgent();
+  
+  if (currentMode === 'multi_agent') {
+    drawWorkloadAgent();
+    drawThermalSentinel();
+    drawCoolingAgent();
+  }
+  
   drawAgentArrows();
 }
 
@@ -424,12 +442,24 @@ function drawWorkloadAgent() {
   });
 }
 
+function drawThermalSentinel() {
+  const { THERM_X, THERM_Y, THERM_W, THERM_H } = L;
+  const active = agentPipeStep === 2;
+  drawAgentBlock(THERM_X, THERM_Y, THERM_W, THERM_H, 'THERMAL SENTINEL', active, COL.p2);
+
+  // Stats
+  const hottest = Math.max(...Object.values(rackTemps), 22);
+  ctx.fillStyle = COL.dim;
+  ctx.font = `400 9px 'JetBrains Mono'`;
+  ctx.textAlign = 'left';
+  ctx.fillText(`Max Predicted: ${hottest.toFixed(1)}°C`, THERM_X + 12, THERM_Y + 28);
+}
+
 function drawCoolingAgent() {
   const { COOL_X, COOL_Y, COOL_W, COOL_H } = L;
-  const active = agentPipeStep === 2 || agentPipeStep === 3;
-  const isNeg  = agentPipeStep === 3 && throttleActive;
+  const active = agentPipeStep === 3;
 
-  drawAgentBlock(COOL_X, COOL_Y, COOL_W, COOL_H, 'THERMAL SENTINEL + COOLING AGENT', active, COL.teal);
+  drawAgentBlock(COOL_X, COOL_Y, COOL_W, COOL_H, 'COOLING AGENT', active, COL.ma);
 
   // Negotiation status
   const arbStatus = latestFrame?.agents?.arbiter?.negotiation_status || 'NOMINAL';
@@ -437,40 +467,24 @@ function drawCoolingAgent() {
   ctx.fillStyle = arbColor;
   ctx.font      = `600 9px 'JetBrains Mono'`;
   ctx.textAlign = 'left';
-  ctx.fillText(arbStatus, COOL_X + 12, COOL_Y + 32);
-
-  // Negotiation arrows between thermal and cooling
-  if (isNeg || agentPipeStep === 2) {
-    const midX = COOL_X + COOL_W / 2;
-    ctx.strokeStyle = COL.p1 + 'cc';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 4]);
-    ctx.beginPath();
-    ctx.moveTo(COOL_X + COOL_W * 0.28, COOL_Y + COOL_H - 16);
-    ctx.lineTo(COOL_X + COOL_W * 0.72, COOL_Y + COOL_H - 16);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Arrowheads
-    arrowHead(COOL_X + COOL_W * 0.62, COOL_Y + COOL_H - 16, 0, COL.p1 + 'cc');
-    arrowHead(COOL_X + COOL_W * 0.38, COOL_Y + COOL_H - 16, Math.PI, COL.p1 + 'cc');
-
-    ctx.fillStyle = COL.dim;
-    ctx.font = `400 8px 'JetBrains Mono'`;
-    ctx.textAlign = 'center';
-    ctx.fillText('negotiating', midX, COOL_Y + COOL_H - 5);
-  }
+  ctx.fillText(arbStatus, COOL_X + 12, COOL_Y + 28);
 
   // Fan speed
   const shed = latestFrame?.agents?.arbiter?.shed_pct || 0;
   ctx.fillStyle = COL.dim;
   ctx.font = `400 9px 'JetBrains Mono'`;
   ctx.textAlign = 'right';
-  ctx.fillText(`shed=${shed.toFixed(0)}%`, COOL_X + COOL_W - 10, COOL_Y + 20);
+  ctx.fillText(`shed=${shed.toFixed(0)}%`, COOL_X + COOL_W - 10, COOL_Y + 28);
 }
 
 function drawAgentArrows() {
-  const { NET_X, NET_Y, NET_W, NET_H, WORKLOAD_X, WORKLOAD_Y, WORKLOAD_W, WORKLOAD_H, COOL_X, COOL_Y, COOL_W, AGENT_ZONE_W } = L;
+  const { NET_X, NET_Y, NET_W, NET_H, WORKLOAD_X, WORKLOAD_Y, WORKLOAD_W, WORKLOAD_H, THERM_X, THERM_Y, THERM_W, THERM_H, COOL_X, COOL_Y, COOL_W, COOL_H, AGENT_ZONE_W } = L;
+
+  if (currentMode === 'baseline') {
+    // Just Net -> Racks
+    drawFlowArrow(NET_X + NET_W, NET_Y + NET_H / 2, AGENT_ZONE_W + 2, L.H / 2, true);
+    return;
+  }
 
   // Net → Workload
   const ax = NET_X + NET_W;
@@ -479,15 +493,36 @@ function drawAgentArrows() {
   const by = WORKLOAD_Y + 30;
   drawFlowArrow(ax, ay, bx, by, agentPipeStep === 0);
 
-  // Workload → Cooling
+  // Workload → Thermal
   const cx2 = WORKLOAD_X + WORKLOAD_W;
   const cy2 = WORKLOAD_Y + WORKLOAD_H / 2;
-  const dx  = COOL_X;
-  const dy  = COOL_Y + L.COOL_H / 2;
+  const dx  = THERM_X + THERM_W;
+  const dy  = THERM_Y + THERM_H / 2;
   drawFlowArrow(cx2, cy2, dx, dy, agentPipeStep === 1);
 
+  // Thermal <-> Cooling
+  const ex = THERM_X + THERM_W / 2;
+  const ey = THERM_Y + THERM_H;
+  const fx = COOL_X + COOL_W / 2;
+  const fy = COOL_Y;
+  
+  if (throttleActive) {
+    ctx.strokeStyle = COL.tWarn + 'cc';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(fx, fy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    arrowHead(fx, fy, Math.PI/2, COL.tWarn + 'cc');
+    arrowHead(ex, ey, -Math.PI/2, COL.tWarn + 'cc');
+  } else {
+    drawFlowArrow(ex, ey, fx, fy, agentPipeStep === 2);
+  }
+
   // Cooling → Rack zone
-  drawFlowArrow(COOL_X + L.COOL_W, COOL_Y + L.COOL_H / 2, L.AGENT_ZONE_W + 2, L.H / 2, agentPipeStep >= 2);
+  drawFlowArrow(COOL_X + COOL_W, COOL_Y + COOL_H / 2, AGENT_ZONE_W + 2, L.H / 2, agentPipeStep >= 3);
 }
 
 function drawFlowArrow(x1, y1, x2, y2, lit) {
@@ -576,8 +611,8 @@ function drawRackCell(id, rx, ry, rw, rh, temp, isLiquid) {
   // Fill by temperature
   const frac = Math.max(0, Math.min(1, (temp - 20) / 70));
   const fillColor = isLiquid
-    ? lerpColor([20, 35, 50], [80, 20, 20], frac * 0.7)
-    : lerpColor([30, 30, 18], [80, 20, 20], frac * 0.7);
+    ? lerpColor([15, 23, 42], [34, 211, 238], frac * 0.7)
+    : lerpColor([15, 23, 42], [255, 255, 255], frac * 0.7);
   ctx.fillStyle = `rgb(${fillColor.join(',')})`;
   fillRect(rx, ry, rw, rh, 3);
 

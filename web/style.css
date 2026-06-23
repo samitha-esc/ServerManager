@@ -6,35 +6,35 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Background layers */
-  --bg0: #07090c;
-  --bg1: #0d1117;
-  --bg2: #131a22;
-  --bg3: #1a2333;
+  /* Background layers - deep blues */
+  --bg0: #020617; /* Slate 950 */
+  --bg1: #0f172a; /* Slate 900 */
+  --bg2: #1e293b; /* Slate 800 */
+  --bg3: #334155; /* Slate 700 */
 
   /* Borders */
-  --b1: rgba(255,255,255,0.07);
-  --b2: rgba(255,255,255,0.12);
+  --b1: rgba(148, 163, 184, 0.1);
+  --b2: rgba(148, 163, 184, 0.2);
 
   /* Text */
-  --txt:     #d0d7de;
-  --txt-dim: #636e7b;
-  --txt-hi:  #f0f6fc;
+  --txt:     #e2e8f0;
+  --txt-dim: #94a3b8;
+  --txt-hi:  #f8fafc;
 
-  /* Accent: Multi-Agent = vivid electric blue */
-  --ma:      #38bdf8;
-  --ma-dim:  rgba(56,189,248,0.12);
-  --ma-glow: rgba(56,189,248,0.3);
+  /* Accent: Multi-Agent = vivid cyan */
+  --ma:      #22d3ee;
+  --ma-dim:  rgba(34, 211, 238, 0.12);
+  --ma-glow: rgba(34, 211, 238, 0.3);
 
-  /* Accent: Baseline = amber/orange */
-  --base:    #fb923c;
-  --base-dim:rgba(251,146,60,0.12);
+  /* Accent: Baseline = slate blue */
+  --base:    #60a5fa;
+  --base-dim:rgba(96, 165, 250, 0.12);
 
-  /* Priority colors */
-  --p0: #f87171;   /* red   */
-  --p1: #fbbf24;   /* amber */
-  --p2: #34d399;   /* green */
-  --p3: #818cf8;   /* indigo */
+  /* Priority colors (shades of blue) */
+  --p0: #0ea5e9;   /* sky 500 */
+  --p1: #38bdf8;   /* sky 400 */
+  --p2: #7dd3fc;   /* sky 300 */
+  --p3: #bae6fd;   /* sky 200 */
 
   /* Temperature */
   --t-ok:   #34d399;
