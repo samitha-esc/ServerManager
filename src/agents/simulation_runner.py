@@ -56,9 +56,11 @@ class KPITracker:
         # History for charts (keep last 300 ticks)
         self.energy_history: Deque[float] = deque(maxlen=300)
         self.peak_temp_history: Deque[float] = deque(maxlen=300)
-        self.violation_history: Deque[int] = deque(maxlen=300)
+        self.violation_history: Deque[float] = deque(maxlen=300)
         self.fan_history: Deque[float] = deque(maxlen=300)
         self.load_history: Deque[float] = deque(maxlen=300)
+        # Rolling window for violation rate (last 30 ticks)
+        self._viol_window: Deque[int] = deque(maxlen=30)
 
     def update(self, total_power_w: float, peak_temp: float,
                dt: float, throttle: bool, fan: float, load: float) -> None:
@@ -70,7 +72,9 @@ class KPITracker:
             self.shed_ticks += 1
         self.energy_history.append(round(self.energy_j / 3600000, 4))
         self.peak_temp_history.append(round(peak_temp, 1))
-        self.violation_history.append(violated)
+        # Rolling 30-tick violation count — gives a meaningful trend
+        self._viol_window.append(violated)
+        self.violation_history.append(sum(self._viol_window))
         self.fan_history.append(round(fan, 2))
         self.load_history.append(round(load, 3))
 

@@ -76,6 +76,23 @@ async def reset_simulation():
     return {"ok": True}
 
 
+@app.post("/api/burst")
+async def trigger_burst():
+    """Inject a temporary load spike into the scheduler."""
+    runner = get_runner()
+    runner.scheduler.inject_burst()
+    return {"ok": True, "msg": "Burst injected"}
+
+
+@app.post("/api/traffic-speed/{multiplier}")
+async def set_traffic_speed(multiplier: float):
+    """Set the traffic load multiplier (0.1 – 5.0)."""
+    multiplier = max(0.1, min(5.0, multiplier))
+    runner = get_runner()
+    runner.scheduler.set_load_multiplier(multiplier)
+    return {"ok": True, "multiplier": multiplier}
+
+
 @app.get("/api/snapshot")
 async def snapshot():
     runner = get_runner()

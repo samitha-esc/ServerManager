@@ -66,6 +66,9 @@ class SchedulerAgent:
         }
         self._shed_active: bool = False
         self._shed_fractions: Dict[int, float] = {p: 1.0 for p in range(4)}
+        # Traffic controls
+        self._load_multiplier: float = 1.0   # set by UI speed slider
+        self._burst_ticks_left: int = 0       # countdown for burst injection
 
     # ------------------------------------------------------------------
     # Public interface
@@ -77,6 +80,14 @@ class SchedulerAgent:
         self.current_load = self._sample_network_load()
         self._update_status()
         self._update_priority_loads()
+
+    def inject_burst(self, duration_ticks: int = 15) -> None:
+        """Called by the API: inject a temporary traffic spike."""
+        self._burst_ticks_left = duration_ticks
+
+    def set_load_multiplier(self, multiplier: float) -> None:
+        """Set the traffic speed multiplier (called by UI slider)."""
+        self._load_multiplier = max(0.1, min(5.0, float(multiplier)))
 
     def apply_throttle(self, p3_shed: float = 1.0, p2_shed: float = 0.5) -> None:
         """Called by Arbiter: reduce P2/P3 contributions."""
@@ -94,14 +105,13 @@ class SchedulerAgent:
 
     @property
     def effective_load(self) -> float:
-        """Load after shedding (used by router and thermal model)."""
-        if not self._shed_active:
-            return self.current_load
-        # Weighted sum after shedding
-        cfg = self.config
+        """Load after shedding and multiplier (used by router and thermal model)."""
         raw = self.current_load
-        total_w = sum(cfg.priority_split[p] * self._shed_fractions[p] for p in range(4))
-        return raw * max(0.0, total_w)
+        if self._shed_active:
+            cfg = self.config
+            total_w = sum(cfg.priority_split[p] * self._shed_fractions[p] for p in range(4))
+            raw = raw * max(0.0, total_w)
+        return min(1.0, raw * self._load_multiplier)
 
     def to_dict(self) -> dict:
         return {
@@ -115,6 +125,8 @@ class SchedulerAgent:
                 for p, v in self.priority_load.items()
             },
             "shed_active": self._shed_active,
+            "load_multiplier": round(self._load_multiplier, 2),
+            "burst_active": self._burst_ticks_left > 0,
         }
 
     # ------------------------------------------------------------------
@@ -123,6 +135,9 @@ class SchedulerAgent:
 
     def _sample_network_load(self) -> float:
         """Return utilization in [0, 1]. Uses psutil if available."""
+        # Count down burst
+        if self._burst_ticks_left > 0:
+            self._burst_ticks_left -= 1
         if _PSUTIL_AVAILABLE:
             return self._sample_psutil()
         return self._sample_synthetic()
@@ -159,11 +174,13 @@ class SchedulerAgent:
         """Sine-wave baseline + noise to simulate realistic load cycles."""
         import math
         t = self._tick
-        base = self.config.synthetic_amplitude
+        base = self.config.synthetic_amplitude * self._load_multiplier
         wave = 0.15 * math.sin(2 * math.pi * t / 300)  # 5-min cycle
         burst = 0.30 * math.sin(2 * math.pi * t / 60) if (t % 400 < 60) else 0.0
+        # Additional burst from inject_burst() API
+        api_burst = 0.45 if self._burst_ticks_left > 0 else 0.0
         noise = self.config.synthetic_noise * (self._rng.random() - 0.5)
-        return float(min(1.0, max(0.05, base + wave + burst + noise)))
+        return float(min(1.0, max(0.05, base + wave + burst + api_burst + noise)))
 
     def _update_status(self) -> None:
         if self._shed_active:
