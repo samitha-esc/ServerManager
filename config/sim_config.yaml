@@ -11,7 +11,7 @@ power:
   #   P(u) = p_idle + (p_max - p_idle) * (2*u - u**r)
   # Idle is already baked into this single value (it IS the node heat input).
   p_idle: 120.0          # [W] power drawn at u = 0
-  p_max: 400.0           # [W] power drawn at u = 1
+  p_max: 600.0           # [W] power drawn at u = 1
   r: 1.4                 # convexity exponent of the SPECpower curve
 
 thermal:
@@ -97,10 +97,10 @@ burstiness:
 # asserts in the critical zone is logged ONLY this phase — it does not touch load.
 cooling_agent:
   horizon_s: 15.0          # [s] prediction look-ahead (predictive, not reactive)
-  warn_c: 75.0             # [°C] safe -> warning: fans begin ramping
-  critical_c: 80.0         # [°C] warning -> critical: assert throttle, fans maxed
-  fan_max: 2.5             # omega_fan at the top of the warning band / in critical
-  release_c: 72.0          # [°C] hysteresis: critical latch clears below this
+  warn_c: 73.0             # [°C] safe -> warning: fans begin ramping
+  critical_c: 78.0         # [°C] warning -> critical: assert throttle, fans maxed
+  fan_max: 1.5             # omega_fan at the top of the warning band / in critical
+  release_c: 70.0          # [°C] hysteresis: critical latch clears below this
   fan_base: 1.0            # omega_fan in the safe zone
 
 # ── Webapp agents ─────────────────────────────────────────────────────────────
@@ -120,8 +120,8 @@ scheduler:
   synthetic_noise: 0.15
 
 arbiter:
-  critical_c: 80.0
-  release_c: 72.0
+  critical_c: 78.0
+  release_c: 70.0
   shed_p3_pct: 1.0
   shed_p2_pct: 0.5
 
