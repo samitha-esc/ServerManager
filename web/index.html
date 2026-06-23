@@ -22,9 +22,7 @@
   </div>
   <nav id="top-nav">
     <span class="nav-item active" data-view="floor">HALL-01</span>
-    <span class="nav-item" id="nav-agents">AGENTS</span>
-    <span class="nav-item" id="nav-telemetry">TELEMETRY</span>
-    <span class="nav-item" id="nav-policies">POLICIES</span>
+    <span class="nav-item" data-view="telemetry" id="nav-telemetry">TELEMETRY</span>
     <span id="live-indicator"><span id="live-dot">●</span> LIVE</span>
   </nav>
 </header>
@@ -32,32 +30,36 @@
 <!-- ═══════════════════ KPI STRIP ═══════════════════ -->
 <div id="kpi-strip">
   <div class="kpi-cell">
-    <div class="kpi-label">RACKS</div>
-    <div class="kpi-value" id="kpi-racks">10</div>
+    <div class="kpi-label">FLOORS</div>
+    <div class="kpi-value gold" id="kpi-floors">05</div>
+  </div>
+  <div class="kpi-cell">
+    <div class="kpi-label">TOTAL RACKS</div>
+    <div class="kpi-value" id="kpi-racks">50</div>
   </div>
   <div class="kpi-cell">
     <div class="kpi-label">AIR-COOLED</div>
-    <div class="kpi-value gold" id="kpi-air">07</div>
+    <div class="kpi-value gold" id="kpi-air">30</div>
   </div>
   <div class="kpi-cell">
     <div class="kpi-label">LIQUID-COOLED</div>
-    <div class="kpi-value teal" id="kpi-liquid">03</div>
+    <div class="kpi-value teal" id="kpi-liquid">20</div>
   </div>
   <div class="kpi-cell">
     <div class="kpi-label">TOTAL SLOTS</div>
-    <div class="kpi-value" id="kpi-slots">150</div>
+    <div class="kpi-value" id="kpi-slots">750</div>
   </div>
   <div class="kpi-cell">
-    <div class="kpi-label">AGENTS</div>
-    <div class="kpi-value teal" id="kpi-agents">04</div>
+    <div class="kpi-label">MODE</div>
+    <div class="kpi-value teal" id="kpi-focus">FLOOR</div>
   </div>
   <div class="kpi-cell">
-    <div class="kpi-label">FOCUS</div>
-    <div class="kpi-value gold" id="kpi-focus">FLOOR</div>
+    <div class="kpi-label">ENERGY (MA)</div>
+    <div class="kpi-value teal" id="kpi-energy-ma">0.000 kWh</div>
   </div>
   <div class="kpi-cell">
-    <div class="kpi-label">ENERGY</div>
-    <div class="kpi-value" id="kpi-energy">0.000 kWh</div>
+    <div class="kpi-label">ENERGY (BASE)</div>
+    <div class="kpi-value warn" id="kpi-energy-base">0.000 kWh</div>
   </div>
   <div class="kpi-cell">
     <div class="kpi-label">VIOLATIONS</div>
@@ -70,9 +72,7 @@
   <span class="mode-label">SIMULATION MODE:</span>
   <button class="mode-btn active" id="btn-multi" onclick="setMode('multi_agent')">● MULTI-AGENT</button>
   <button class="mode-btn" id="btn-base" onclick="setMode('baseline')">○ BASELINE</button>
-  <span style="margin-left:auto; color:#6b7280; font-size:0.72rem;">
-    AGENTS: SCHEDULER · THERMAL-SENTINEL · ROUTER · ARBITER
-  </span>
+  <span id="mode-desc">Showing: MULTI-AGENT (LTI routing + predictive cooling + Arbiter negotiation)</span>
 </div>
 
 <!-- ═══════════════════ MAIN CONTENT ═══════════════════ -->
@@ -81,12 +81,36 @@
   <!-- ─── VIEW 1: FLOOR MAP ─── -->
   <div id="view-floor" class="view active">
     <div id="floor-header">
-      <span class="sec-title">RACK TOPOLOGY // HALL-01</span>
-      <span class="sec-right" id="floor-subtitle">10 NODES · LEAF-SPINE FABRIC · AGENT-ROUTED PACKETS</span>
+      <span class="sec-title">RACK TOPOLOGY // HALL-01 — 5 FLOORS · 10 RACKS EACH</span>
+      <span class="sec-right" id="floor-subtitle">50 RACKS · FLOOR-BASED FABRIC · AGENT-ROUTED PACKETS</span>
     </div>
     <div id="floor-body">
-      <!-- Priority legend (left) -->
+      <!-- Priority legend + arbiter (left) -->
       <div id="priority-legend">
+        <div id="agent-flow-box">
+          <div class="af-title">AGENT PIPELINE</div>
+          <div class="af-step" id="af-net">
+            <div class="af-dot net-dot"></div>
+            <div class="af-label">NETWORK<br>TRAFFIC AGENT</div>
+          </div>
+          <div class="af-arrow">▼</div>
+          <div class="af-step" id="af-work">
+            <div class="af-dot work-dot"></div>
+            <div class="af-label">WORKLOAD<br>AGENT</div>
+          </div>
+          <div class="af-arrow">▼</div>
+          <div class="af-step" id="af-therm">
+            <div class="af-dot therm-dot"></div>
+            <div class="af-label">THERMAL<br>SENTINEL</div>
+          </div>
+          <div class="af-arrow">▼</div>
+          <div class="af-step" id="af-cool">
+            <div class="af-dot cool-dot"></div>
+            <div class="af-label">COOLING<br>AGENT</div>
+          </div>
+          <div class="af-neg-line" id="af-neg">⇄ NEGOTIATING…</div>
+        </div>
+
         <div class="prio-item p0" id="prio-P0">
           <div class="prio-tag">P0 Critical</div>
           <div class="prio-sub">(Live Requests)</div>
@@ -107,55 +131,66 @@
           <div class="prio-sub">(Backups / Logs)</div>
           <div class="prio-bar-wrap"><div class="prio-bar" id="pb-p3"></div></div>
         </div>
+
         <div id="arbiter-box">
           <div class="arb-title">ARBITER</div>
           <div id="arb-status">NOMINAL</div>
           <div id="arb-shed" style="display:none;">⚡ SHED ACTIVE</div>
         </div>
       </div>
+
       <!-- SVG topology canvas -->
-      <svg id="topology-svg" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet">
+      <svg id="topology-svg" viewBox="0 0 1000 650" preserveAspectRatio="xMidYMid meet">
         <defs>
           <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
-            <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255,200,100,0.5)" />
+            <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255,200,100,0.6)" />
+          </marker>
+          <marker id="arrow-teal" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="rgba(45,212,191,0.7)" />
           </marker>
           <filter id="glow">
             <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
             <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
           </filter>
+          <filter id="glow-strong">
+            <feGaussianBlur stdDeviation="5" result="coloredBlur"/>
+            <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
         </defs>
-        <!-- Edges drawn by JS -->
-        <g id="svg-edges"></g>
-        <!-- Packet animations -->
-        <g id="svg-packets"></g>
+        <!-- Floor labels drawn by JS -->
+        <g id="svg-floor-labels"></g>
+        <!-- Floor separator lines -->
+        <g id="svg-floor-lines"></g>
         <!-- Rack nodes -->
         <g id="svg-racks"></g>
-        <!-- Switch nodes -->
-        <g id="svg-switches"></g>
+        <!-- Agent routing animation overlay -->
+        <g id="svg-agents"></g>
+        <!-- Packet animations -->
+        <g id="svg-packets"></g>
       </svg>
     </div>
     <!-- bottom legend -->
     <div id="floor-legend">
-      <span class="leg-item gold">■ AIR-COOLED · 07</span>
-      <span class="leg-item teal">■ LIQUID-COOLED · 03</span>
+      <span class="leg-item gold">■ AIR-COOLED (FLOORS 1-3 · 30 RACKS)</span>
+      <span class="leg-item teal">■ LIQUID-COOLED (FLOORS 4-5 · 20 RACKS)</span>
       <span class="leg-item p0c">● P0 CRITICAL</span>
       <span class="leg-item p1c">● P1 HIGH</span>
       <span class="leg-item p2c">● P2 MEDIUM</span>
       <span class="leg-item p3c">● P3 LOW</span>
-      <span style="margin-left:auto;color:#4b5563;font-size:0.7rem;">CLICK ANY RACK TO INSPECT SLOT TRAFFIC</span>
+      <span style="margin-left:auto;color:#4b5563;font-size:0.7rem;">CLICK ANY RACK TO INSPECT</span>
     </div>
   </div>
 
   <!-- ─── VIEW 2: RACK DETAIL ─── -->
   <div id="view-rack" class="view">
     <div id="rack-header">
-      <span class="breadcrumb" onclick="showFloor()">← FLOOR</span>
-      <span id="rack-breadcrumb"> RACK <span id="rack-id-title">R07</span> · AISLE A · <span id="rack-kind-title" class="gold">AIR-COOLED</span></span>
+      <span class="breadcrumb" onclick="showFloor()">← FLOOR MAP</span>
+      <span id="rack-breadcrumb"> RACK <span id="rack-id-title">R01</span> · <span id="rack-kind-title" class="gold">AIR-COOLED</span></span>
       <span class="sec-right">30U RACK · 15 × 2U BLADES</span>
     </div>
     <div id="rack-body">
-      <!-- Left: orchestration + lanes -->
       <div id="rack-left">
+        <!-- Orchestration box -->
         <div id="orch-box">
           <div class="orch-title">ORCHESTRATION CONTROL</div>
           <div id="orch-grid">
@@ -166,31 +201,29 @@
           </div>
           <div id="orch-footnote">P0/P1 bypass queues · P2/P3 throttled during crisis · agents negotiate slot leases</div>
         </div>
-
         <!-- Traffic lanes -->
         <div class="lane-wrap">
           <div class="lane" id="lane-p0">
             <div class="lane-label p0l">P0 Critical <span class="lane-sub">(Live Requests)</span></div>
             <div class="lane-track" id="track-p0"></div>
-            <div class="lane-router">+ ROUTER</div>
+            <div class="lane-router">→ NET</div>
           </div>
           <div class="lane" id="lane-p1">
             <div class="lane-label p1l">P1 High <span class="lane-sub">(AI Training)</span></div>
             <div class="lane-track" id="track-p1"></div>
-            <div class="lane-router">+ ROUTER</div>
+            <div class="lane-router">→ WORK</div>
           </div>
           <div class="lane" id="lane-p2">
             <div class="lane-label p2l">P2 Medium <span class="lane-sub">(ETL Pipelines)</span></div>
             <div class="lane-track" id="track-p2"></div>
-            <div class="lane-router">+ ROUTER</div>
+            <div class="lane-router">→ THERM</div>
           </div>
           <div class="lane" id="lane-p3">
             <div class="lane-label p3l">P3 Low <span class="lane-sub">(Backups / Logs)</span></div>
             <div class="lane-track" id="track-p3"></div>
-            <div class="lane-router">+ ROUTER</div>
+            <div class="lane-router">→ COOL</div>
           </div>
         </div>
-
         <div id="rack-footer">
           <span>PEAK: <span class="gold" id="rf-peak">--</span></span>
           <span>AVG: <span id="rf-avg">--</span></span>
@@ -199,8 +232,6 @@
           <span>MODE: <span class="teal" id="rf-mode">AIR</span></span>
         </div>
       </div>
-
-      <!-- Right: slot temperature list -->
       <div id="rack-right">
         <div class="slot-header">30U RACK &nbsp;&nbsp; 15 × 2U BLADES</div>
         <div id="slot-list"></div>
@@ -212,23 +243,44 @@
   <div id="view-telemetry" class="view">
     <div id="telem-header">
       <span class="sec-title">TELEMETRY // COMPARATIVE ANALYTICS</span>
-      <span class="sec-right">BASELINE vs. MULTI-AGENT · LIVE DATA</span>
+      <span class="sec-right">
+        <span class="contrast-ma">━ MULTI-AGENT</span>
+        &nbsp;&nbsp;
+        <span class="contrast-base">╌ BASELINE</span>
+        &nbsp;&nbsp;· LIVE DATA
+      </span>
     </div>
     <div id="charts-grid">
       <div class="chart-card">
         <div class="chart-title">⚡ ENERGY CONSUMPTION (kWh)</div>
+        <div class="chart-legend">
+          <span class="legend-ma">■ Multi-Agent</span>
+          <span class="legend-base">■ Baseline</span>
+        </div>
         <canvas id="chart-energy"></canvas>
       </div>
       <div class="chart-card">
         <div class="chart-title">🌡 PEAK TEMPERATURE (°C)</div>
+        <div class="chart-legend">
+          <span class="legend-ma">■ Multi-Agent</span>
+          <span class="legend-base">■ Baseline</span>
+        </div>
         <canvas id="chart-temp"></canvas>
       </div>
       <div class="chart-card">
         <div class="chart-title">⚠ THERMAL VIOLATIONS (ticks &gt; 85°C)</div>
+        <div class="chart-legend">
+          <span class="legend-ma">■ Multi-Agent</span>
+          <span class="legend-base">■ Baseline</span>
+        </div>
         <canvas id="chart-violations"></canvas>
       </div>
       <div class="chart-card">
         <div class="chart-title">🌀 FAN SPEED vs. LOAD INDEX</div>
+        <div class="chart-legend">
+          <span class="legend-ma">■ Multi-Agent</span>
+          <span class="legend-base">■ Baseline</span>
+        </div>
         <canvas id="chart-fan"></canvas>
       </div>
     </div>
@@ -238,13 +290,13 @@
 
 <!-- ═══════════════════ AGENT LOG PANEL ═══════════════════ -->
 <div id="log-panel">
-  <div id="log-title">AGENT NEGOTIATION LOG</div>
+  <div id="log-title">AGENT NEGOTIATION LOG — Network → Workload → Thermal → Cooling → Router</div>
   <div id="log-content"></div>
 </div>
 
 <!-- ═══════════════════ FOOTER ═══════════════════ -->
 <footer id="app-footer">
-  <span>BUILD 1.0.0 · SEM-IV ELE-CAP</span>
+  <span>BUILD 2.0.0 · SEM-IV ELE-CAP · 5-FLOOR TOPOLOGY</span>
   <span id="tick-counter">TICK: 0</span>
   <span>© THERMOS OPS</span>
 </footer>
