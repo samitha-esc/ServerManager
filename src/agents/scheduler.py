@@ -81,7 +81,7 @@ class SchedulerAgent:
         self._update_status()
         self._update_priority_loads()
 
-    def inject_burst(self, duration_ticks: int = 15) -> None:
+    def inject_burst(self, duration_ticks: int = 120) -> None:
         """Called by the API: inject a temporary traffic spike."""
         self._burst_ticks_left = duration_ticks
 
@@ -178,7 +178,7 @@ class SchedulerAgent:
         wave = 0.15 * math.sin(2 * math.pi * t / 300)  # 5-min cycle
         burst = 0.30 * math.sin(2 * math.pi * t / 60) if (t % 400 < 60) else 0.0
         # Additional burst from inject_burst() API
-        api_burst = 0.45 if self._burst_ticks_left > 0 else 0.0
+        api_burst = 0.85 if self._burst_ticks_left > 0 else 0.0
         noise = self.config.synthetic_noise * (self._rng.random() - 0.5)
         return float(min(1.0, max(0.05, base + wave + burst + api_burst + noise)))
 

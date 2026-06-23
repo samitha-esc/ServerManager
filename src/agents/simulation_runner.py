@@ -169,13 +169,27 @@ class SimulationRunner:
         # Build per-slot utilization for each rack (vary slightly per rack)
         rng = np.random.default_rng(t)
 
-        def make_util(base_load: float, n_slots: int, rack_idx: int) -> np.ndarray:
+        def make_util(target_load: float, n_slots: int, rack_idx: int) -> np.ndarray:
             noise = 0.06 * rng.standard_normal(n_slots)
             rack_bias = 0.04 * np.sin(2 * np.pi * rack_idx / len(RACKS) + t / 120)
-            return np.clip(base_load + rack_bias + noise, 0.05, 1.0)
+            return np.clip(target_load + rack_bias + noise, 0.05, 1.0)
 
         # 2. Orient + Decide + Act ── advance both simulation tracks
         peek_temps_ma = {rid: s.peak_temp for rid, s in self.sentinels_ma.items()}
+
+        # Distribute LTI load for MA
+        total_sys_load = load * len(RACKS)
+        sorted_ma = sorted(RACKS, key=lambda r: peek_temps_ma.get(r.id, 99.0))
+        ma_load_map = {}
+        rem = total_sys_load
+        for r in sorted_ma:
+            alloc = min(0.95, rem)
+            ma_load_map[r.id] = max(0.05, alloc)
+            rem -= alloc
+        if rem > 0:
+            extra = rem / len(RACKS)
+            for r in RACKS:
+                ma_load_map[r.id] = min(1.0, ma_load_map[r.id] + extra)
 
         # Packet routing
         n_pkts = max(1, int(load * 20))
@@ -205,20 +219,26 @@ class SimulationRunner:
 
         for idx, rack_def in enumerate(RACKS):
             rid = rack_def.id
-            util = make_util(load, self.config["rack"]["n_slots"], idx)
+            util_base = make_util(load, self.config["rack"]["n_slots"], idx)
+            util_ma = make_util(ma_load_map[rid], self.config["rack"]["n_slots"], idx)
+
+            # Energy parameters
+            rated_w = float(self.config.get("energy", {}).get("rated_w", {}).get(rack_def.kind, 500.0 if rack_def.kind == "air" else 150.0))
 
             # Multi-agent track
-            dec_ma = self.sentinels_ma[rid].step(util, multi_agent=True)
+            dec_ma = self.sentinels_ma[rid].step(util_ma, multi_agent=True)
             sm = self.sentinels_ma[rid]
+            fan_power_ma = rated_w * (dec_ma.omega_fan ** 3)
             slot_powers_ma = sm.slot_powers
-            total_power_ma += sum(slot_powers_ma)
+            total_power_ma += sum(slot_powers_ma) + fan_power_ma
             peak_ma_global = max(peak_ma_global, sm.peak_temp)
             fan_ma_sum += dec_ma.omega_fan
 
             # Baseline track
-            dec_base = self.sentinels_base[rid].step(util, multi_agent=False)
+            dec_base = self.sentinels_base[rid].step(util_base, multi_agent=False)
             sb = self.sentinels_base[rid]
-            total_power_base += sum(sb.slot_powers)
+            fan_power_base = rated_w * (dec_base.omega_fan ** 3)
+            total_power_base += sum(sb.slot_powers) + fan_power_base
             peak_base_global = max(peak_base_global, sb.peak_temp)
 
             # Build rack output (use the currently active mode for display)
